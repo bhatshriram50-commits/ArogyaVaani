@@ -1,0 +1,16 @@
+import { useState } from 'react';
+import { ArrowRight, ScanSearch, UploadCloud } from 'lucide-react';
+import { centralApiUrl, localMlUrl, tokenHeaders } from './config';
+
+type PredictionResult = { prediction: string; confidence: number; model_version: number | string; timestamp: string };
+const recordMetadata = async (body: object) => {
+  const response = await fetch(centralApiUrl + '/api/predictions/metadata', { method: 'POST', headers: { 'Content-Type': 'application/json', ...tokenHeaders() }, body: JSON.stringify(body) });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message ?? 'Unable to record prediction metadata.');
+};
+
+export function Prediction() {
+  const [file, setFile] = useState<File | null>(null); const [result, setResult] = useState<PredictionResult | null>(null); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  async function predict() { if (!file) return; setBusy(true); setError(''); const form = new FormData(); form.append('file', file); try { const response = await fetch(localMlUrl + '/predict', { method: 'POST', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.detail ?? 'Local prediction failed.'); setResult(data); await recordMetadata({ modelVersion: typeof data.model_version === 'number' ? data.model_version : 0, predictedClass: data.prediction, confidence: data.confidence }); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Prediction failed.'); } finally { setBusy(false); } }
+  return <><section className="page-heading"><div><div className="eyebrow">PREDICTION</div><h1>Clinical prediction</h1><p>Run inference against the latest local DenseNet checkpoint.</p></div></section><div className="prediction-grid"><section className="panel prediction-panel"><div className="panel-title"><div><h2>Upload a medical image</h2><p>The image is sent only to your hospital-local ML service.</p></div><ScanSearch size={25} color="#168b78" /></div><label className="dropzone prediction-drop"><input type="file" accept="image/jpeg,image/png,image/bmp,image/webp,image/tiff" onChange={event => { setFile(event.target.files?.[0] ?? null); setResult(null); setError(''); }} /><UploadCloud size={31} /><b>{file ? file.name : 'Drop an image here'}</b><span>{file ? `${(file.size / 1024 / 1024).toFixed(2)} MB selected` : 'or browse from your device'}</span><small>JPG, PNG, BMP, WEBP, TIFF · Local processing only</small></label>{error && <div className="form-error">{error}</div>}<button className="button primary full" disabled={!file || busy} onClick={() => void predict()}>{busy ? 'Running local inference…' : 'Run prediction'} <ArrowRight size={16} /></button></section><section className="panel result-panel"><div className="eyebrow">MODEL OUTPUT</div>{result ? <><h2>{result.prediction}</h2><p>{(result.confidence * 100).toFixed(1)}% confidence</p><small>Model {String(result.model_version)} · {new Date(result.timestamp).toLocaleString()}</small></> : <p>Prediction results will appear here after local inference.</p>}<div className="clinical-note"><b>Clinical decision support only</b>This prediction is a research demonstration and is not a substitute for professional medical diagnosis.</div></section></div></>;
+}
