@@ -323,6 +323,7 @@ const aggregateWireModels = (updates: Array<{ binaryPayload: Buffer; samples: nu
   return { binaryPayload: Buffer.concat([Buffer.from('AVM1'), size, manifest, ...chunks]), classes: first.manifest.classes, architecture: first.manifest.architecture, parameterShapes: Object.fromEntries(first.manifest.tensors.map(t => [t.name, t.shape])), totalSamples };
 };
 
+app.get('/', (_req, res) => res.json({ name: 'ArogyaVaani Central API', status: 'operational', version: '1.0.0', health: '/api/health', ready: '/api/ready' }));
 app.get('/api/health', (_req, res) => res.status(databaseState === 'error' ? 503 : 200).json({ status: databaseState === 'error' ? 'degraded' : 'operational', persistence: useDb() ? 'mongodb' : databaseState, database: { configured: Boolean(process.env.MONGODB_URI), state: databaseState, error: process.env.NODE_ENV !== 'production' ? databaseError || undefined : undefined }, privacyBoundary: 'model-updates-and-metadata-only' }));
 app.get('/api/ready', (_req, res) => {
   const ready = persistenceRequired ? useDb() && Boolean(artifactRoot) : databaseState !== 'error';
