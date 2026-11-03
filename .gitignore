@@ -1,8 +1,34 @@
+# Dependencies
 node_modules/
-dist/
-.env
 .venv/
+
+# Build artifacts
+dist/
+*.tsbuildinfo
+
+# Environment variables & secrets (keep example templates)
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+ml/.env
+
+# Python cache & test artifacts
 __pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local model weights & datasets (Privacy: raw images & checkpoints remain local)
 *.pt
 *.pth
+*.avm1
 uploads/
+local_datasets/
+local_models/
+local_updates/
+backend/model_artifacts/
+
+# OS metadata
+.DS_Store
+Thumbs.db

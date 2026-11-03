@@ -1,3 +1,487 @@
-.training-context,.model-summary{display:grid;gap:1px;margin:-4px 0 18px;overflow:hidden;border:1px solid #dce9e7;border-radius:8px;background:#dce9e7}.training-context{grid-template-columns:repeat(3,1fr)}.model-summary{grid-template-columns:repeat(4,1fr)}.training-context>div,.model-summary>div{padding:13px 15px;background:#fff}.training-context span,.model-summary span{display:block;color:#788e94;font-size:9px;font-weight:800;letter-spacing:.7px}.training-context b,.model-summary b{display:block;margin-top:6px;color:#12314b;font-size:12px}@media(max-width:680px){.training-context,.model-summary{grid-template-columns:1fr 1fr}}@media(max-width:420px){.training-context,.model-summary{grid-template-columns:1fr}}
-.dataset-import{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:16px;padding:14px;border:1px solid #cde9df;border-radius:7px;background:#eff9f5}.dataset-import b,.dataset-import span{display:block}.dataset-import b{font-size:12px;color:#12314b}.dataset-import span{margin-top:4px;color:#617987;font-size:10px;line-height:1.45}.dataset-import-actions{display:flex;gap:8px;flex:none}.dataset-import-actions .button{white-space:nowrap}@media(max-width:680px){.dataset-import{align-items:flex-start;flex-direction:column}.dataset-import-actions{width:100%}.dataset-import-actions .button{flex:1;padding-left:8px;padding-right:8px}}@media(max-width:420px){.dataset-import-actions{flex-direction:column}.dataset-import-actions .button{width:100%}}
-.dataset-upload-field{display:flex;align-items:center;gap:13px;padding:18px;border:1px dashed #8ec9bc;border-radius:8px;background:#f4fbf9;color:#087f70;cursor:pointer}.dataset-upload-field:focus{outline:2px solid #087f70;outline-offset:2px}.dataset-upload-field b,.dataset-upload-field span{display:block}.dataset-upload-field b{font-size:12px;color:#12314b}.dataset-upload-field span{margin-top:4px;color:#617987;font-size:10px;line-height:1.45}.dataset-upload-field .button{margin-left:auto;white-space:nowrap;pointer-events:none}.dataset-summary>div:first-child{align-items:center}.dataset-summary>div:first-child span{flex:1}.dataset-summary .text-link{margin-left:auto;color:#087f70;font-weight:700}.dataset-summary p{margin:0;padding:12px 13px;color:#617987;font-size:11px;line-height:1.5}.dataset-summary-actions{display:flex;align-items:center;gap:12px;padding:0 13px 13px}.dataset-summary-actions small{color:#617987;font-size:10px}.training-actions{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-top:16px}.training-actions label{display:grid;gap:6px;color:#5d716a;font-size:11px;font-weight:700}.training-actions input{width:130px;border:1px solid #d6e4e4;border-radius:6px;padding:12px;background:#fff;color:#12314b}@media(max-width:680px){.dataset-upload-field{align-items:flex-start;flex-wrap:wrap}.dataset-upload-field .button{width:100%;margin-left:0}.dataset-summary-actions{align-items:flex-start;flex-direction:column}.training-actions{align-items:stretch;flex-direction:column}.training-actions label input{width:100%}}
+/* ArogyaVaani Dashboard & Component Styles */
+
+.training-context, .model-summary {
+  display: grid;
+  gap: 1px;
+  margin: -4px 0 24px;
+  overflow: hidden;
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-md);
+  background: var(--border-line);
+  box-shadow: var(--shadow-sm);
+}
+
+.training-context {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.model-summary {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.training-context > div, .model-summary > div {
+  padding: 18px 20px;
+  background: #ffffff;
+}
+
+.training-context span, .model-summary span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.training-context b, .model-summary b {
+  display: block;
+  margin-top: 8px;
+  color: var(--navy);
+  font-size: 18px;
+  font-weight: 750;
+}
+
+/* Dataset Preparation & Upload */
+.dataset-upload-field {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 24px;
+  border: 2px dashed #7fc4b6;
+  border-radius: var(--radius-md);
+  background: #f3faf8;
+  color: var(--teal);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.dataset-upload-field:hover, .dataset-upload-field:focus {
+  border-color: var(--teal);
+  background: #ebf7f4;
+  outline: none;
+}
+
+.dataset-upload-field b, .dataset-upload-field span {
+  display: block;
+}
+
+.dataset-upload-field b {
+  font-size: 17px;
+  font-weight: 750;
+  color: var(--navy);
+}
+
+.dataset-upload-field span {
+  margin-top: 5px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.dataset-upload-field .button {
+  margin-left: auto;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.dataset-summary {
+  margin-top: 24px;
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: #ffffff;
+  box-shadow: var(--shadow-sm);
+}
+
+.dataset-summary > div:first-child {
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #edf7f5;
+  color: var(--teal);
+  border-bottom: 1px solid var(--border-line);
+}
+
+.dataset-summary > div:first-child span {
+  flex: 1;
+  font-size: 15px;
+  color: var(--navy);
+}
+
+.dataset-summary > div:first-child b {
+  font-size: 16px;
+}
+
+.dataset-summary table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.dataset-summary th, .dataset-summary td {
+  padding: 14px 20px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 15px;
+}
+
+.dataset-summary th {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-muted);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  background: #fbfdfc;
+}
+
+.dataset-summary td {
+  color: var(--navy);
+  font-weight: 600;
+}
+
+.dataset-summary p {
+  margin: 0;
+  padding: 16px 20px;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 600;
+  background: #fbfdfc;
+  border-bottom: 1px solid var(--border-line);
+}
+
+.dataset-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  background: #ffffff;
+}
+
+.dataset-summary-actions small {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* Dataset Validated State */
+.dataset-ready {
+  margin-top: 24px;
+  background: #eff9f6;
+  border: 1px solid var(--green-border);
+  border-radius: var(--radius-md);
+  padding: 22px;
+}
+
+.ready-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--teal);
+}
+
+.ready-heading b, .ready-heading span {
+  display: block;
+}
+
+.ready-heading b {
+  color: var(--navy);
+  font-size: 18px;
+  font-weight: 750;
+}
+
+.ready-heading span {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.dataset-real-metrics, .model-update-metadata, .training-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1px;
+  margin-top: 18px;
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--border-line);
+}
+
+.dataset-real-metrics > div, .model-update-metadata > div, .training-metrics > div {
+  padding: 18px 20px;
+  background: #ffffff;
+}
+
+.dataset-real-metrics span, .model-update-metadata span, .training-metrics span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.dataset-real-metrics b, .model-update-metadata b, .training-metrics b {
+  display: block;
+  margin-top: 8px;
+  color: var(--navy);
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.dataset-real-metrics small {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* Training Configuration Actions */
+.training-actions {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border-line);
+}
+
+.training-actions label {
+  display: grid;
+  gap: 8px;
+  color: var(--navy-muted);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.training-actions input {
+  width: 140px;
+  min-height: 44px;
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  background: #ffffff;
+  color: var(--navy);
+  font-size: 16px;
+  font-weight: 650;
+}
+
+/* Training In-Progress & Model-Ready Panels */
+.training-progress, .local-model-ready, .submission-state {
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-md);
+  padding: 26px;
+  background: #ffffff;
+  box-shadow: var(--shadow-sm);
+  margin-top: 24px;
+}
+
+.training-progress .progress {
+  margin: 20px 0;
+  height: 12px;
+}
+
+.local-model-ready {
+  border-color: #bedfd7;
+  background: #fcfefe;
+}
+
+.local-model-ready .button {
+  margin-top: 22px;
+}
+
+.submission-state {
+  background: #f1f9f6;
+  border-color: var(--green-border);
+}
+
+.submission-state p {
+  margin: 14px 0 0;
+  color: var(--navy-muted);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* Clinical Prediction View */
+.prediction-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 24px;
+  align-items: stretch;
+}
+
+.prediction-panel, .result-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.dropzone {
+  min-height: 240px;
+  margin: 22px 0 16px;
+  border: 2px dashed #8ecabc;
+  border-radius: var(--radius-md);
+  background: #f5fbf9;
+  display: flex;
+  flex-direction: column;
+  place-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--teal);
+  text-align: center;
+  cursor: pointer;
+  padding: 24px;
+  transition: all 0.2s ease;
+}
+
+.dropzone:hover {
+  border-color: var(--teal);
+  background: #edf7f4;
+}
+
+.dropzone b {
+  font-size: 17px;
+  font-weight: 750;
+  color: var(--navy);
+}
+
+.dropzone span {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.result-panel {
+  background: #ffffff;
+}
+
+.result-panel h2 {
+  font-size: 28px;
+  color: var(--teal);
+  margin: 12px 0 6px;
+}
+
+.result-panel p {
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--navy);
+  margin: 0 0 10px;
+}
+
+.result-panel small {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.clinical-note {
+  margin-top: auto;
+  padding: 16px;
+  background: var(--amber-light);
+  border: 1px solid var(--amber-border);
+  border-radius: var(--radius-sm);
+  color: var(--amber);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.clinical-note b {
+  display: block;
+  margin-bottom: 4px;
+  color: #8c4500;
+}
+
+/* Federated Pipeline Animation & Flow */
+.pipeline-flow {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-top: 28px;
+}
+
+.pipeline-step {
+  text-align: center;
+  padding: 18px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: #f9fcfb;
+}
+
+.pipeline-icon {
+  width: 58px;
+  height: 58px;
+  margin: 0 auto 12px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: var(--teal-light);
+  color: var(--teal);
+}
+
+.pipeline-step b {
+  display: block;
+  font-size: 15px;
+  color: var(--navy);
+}
+
+.pipeline-step span {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.round-stats {
+  display: flex;
+  justify-content: space-between;
+  margin: 24px 0 16px;
+}
+
+.round-stats b {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--navy);
+}
+
+.round-stats span {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.progress-legend {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+  color: var(--text-muted);
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 900px) {
+  .training-context, .model-summary {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .pipeline-flow {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .prediction-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 540px) {
+  .training-context, .model-summary {
+    grid-template-columns: 1fr;
+  }
+  .pipeline-flow {
+    grid-template-columns: 1fr;
+  }
+  .training-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .training-actions input {
+    width: 100%;
+  }
+}

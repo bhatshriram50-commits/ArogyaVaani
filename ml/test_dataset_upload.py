@@ -69,6 +69,21 @@ class FolderDatasetUploadTests(unittest.TestCase):
         self.assertEqual(error.exception.status_code, 400)
         self.assertIn('invalid image', error.exception.detail)
 
+    def test_task_uploads_are_kept_in_distinct_local_roots(self):
+        files = [
+            UploadFile(filename='fundus/NORMAL/normal.png', file=png_bytes((10, 20, 30))),
+            UploadFile(filename='fundus/DISEASE/disease.png', file=png_bytes((30, 20, 10))),
+        ]
+        result = asyncio.run(service.upload_dataset(task='RETINOPATHY', files=files))
+        self.assertEqual(result['task'], 'RETINOPATHY')
+        self.assertIn('retinopathy', result['dataset_dir'].lower())
+
+    def test_validation_refuses_a_dataset_path_outside_local_task_storage(self):
+        with self.assertRaises(HTTPException) as error:
+            service.dataset_validation('C:/outside-local-storage', task='PNEUMONIA')
+        self.assertEqual(error.exception.status_code, 400)
+        self.assertIn('selected task local dataset directory', error.exception.detail)
+
 
 if __name__ == '__main__':
     unittest.main()

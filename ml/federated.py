@@ -12,6 +12,7 @@ from torchvision import datasets, models, transforms
 IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp'}
 MAX_DATASET_FILES = 20_000
 MAX_DATASET_UPLOAD_BYTES = 1_000_000_000
+MAX_IMAGE_PIXELS = 40_000_000
 IMAGENET_TRANSFORM = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -19,8 +20,14 @@ IMAGENET_TRANSFORM = transforms.Compose([
 ])
 
 def create_densenet(num_classes: int) -> nn.Module:
-    model = models.densenet121(weights=None)
-    model.classifier = nn.Linear(model.classifier.in_features, num_classes)
+    """Construct the shared v0 model without changing the caller's RNG state."""
+    # Round one has no aggregated artifact.  A fixed seed makes its bootstrap
+    # parameters identical at every selected hospital; later rounds load their
+    # centrally aggregated checkpoint instead.
+    with torch.random.fork_rng():
+        torch.manual_seed(20261005)
+        model = models.densenet121(weights=None)
+        model.classifier = nn.Linear(model.classifier.in_features, num_classes)
     return model
 
 def validate_dataset(dataset_dir: str) -> dict:
@@ -49,6 +56,8 @@ def validate_dataset(dataset_dir: str) -> dict:
             try:
                 from PIL import Image
                 with Image.open(image_path) as image:
+                    if image.width * image.height > MAX_IMAGE_PIXELS:
+                        raise ValueError('image dimensions exceed the local safety limit')
                     image.verify()
             except (OSError, ValueError):
                 invalid.append(str(image_path))
@@ -56,7 +65,7 @@ def validate_dataset(dataset_dir: str) -> dict:
         raise ValueError(f'Dataset has {len(invalid)} invalid image(s); correct them before training')
     return {'dataset_dir': str(root), 'classes': [item.name for item in classes], 'class_distribution': distribution, 'file_count': sum(distribution.values()), 'size_bytes': total_bytes, 'supported_types': sorted(IMAGE_SUFFIXES)}
 
-def local_train(dataset_dir: str, num_classes: int, epochs: int = 1, batch_size: int = 16, initial_checkpoint: str | None = None, progress: Callable[[dict], None] | None = None) -> tuple[OrderedDict, dict]:
+def local_train(dataset_dir: str, num_classes: int, epochs: int = 10, batch_size: int = 16, initial_checkpoint: str | None = None, progress: Callable[[dict], None] | None = None) -> tuple[OrderedDict, dict]:
     validation = validate_dataset(dataset_dir)
     if len(validation['classes']) != num_classes:
         raise ValueError(f'num_classes ({num_classes}) does not match the {len(validation["classes"])} local class folders')
@@ -65,13 +74,23 @@ def local_train(dataset_dir: str, num_classes: int, epochs: int = 1, batch_size:
     model = create_densenet(num_classes)
     if initial_checkpoint and Path(initial_checkpoint).is_file():
         saved = torch.load(initial_checkpoint, map_location='cpu', weights_only=True)
-        model.load_state_dict(saved['state_dict'] if 'state_dict' in saved else saved)
+        ckpt_classes = saved.get('classes', [])
+        if ckpt_classes and len(ckpt_classes) != num_classes:
+            raise ValueError(f"Checkpoint classes count ({len(ckpt_classes)}) does not match dataset classes count ({num_classes})")
+        state_dict = saved['state_dict'] if isinstance(saved, dict) and 'state_dict' in saved else saved
+        classifier_weight = state_dict.get('classifier.weight') if isinstance(state_dict, dict) else None
+        if classifier_weight is not None and classifier_weight.shape[0] != num_classes:
+            raise ValueError(f"Checkpoint classifier output classes ({classifier_weight.shape[0]}) does not match model classes ({num_classes})")
+        model.load_state_dict(state_dict)
     optimizer, criterion = torch.optim.Adam(model.parameters(), lr=1e-4), nn.CrossEntropyLoss()
     history = []
+    total_batches = len(loader)
     model.train()
+    if progress:
+        progress({'status': 'training', 'epoch': 1, 'total_epochs': epochs, 'batch': 0, 'total_batches': total_batches, 'loss': 0.0, 'accuracy': 0.0})
     for epoch in range(1, epochs + 1):
         loss_sum, correct, count = 0.0, 0, 0
-        for images, labels in loader:
+        for batch_idx, (images, labels) in enumerate(loader, start=1):
             optimizer.zero_grad()
             logits = model(images)
             loss = criterion(logits, labels)
@@ -81,11 +100,42 @@ def local_train(dataset_dir: str, num_classes: int, epochs: int = 1, batch_size:
             loss_sum += loss.item() * batch_size_actual
             correct += (logits.argmax(dim=1) == labels).sum().item()
             count += batch_size_actual
-        metric = {'epoch': epoch, 'loss': loss_sum / count, 'accuracy': correct / count}
+            if progress and (batch_idx == 1 or batch_idx % max(1, total_batches // 4) == 0 or batch_idx == total_batches):
+                progress({
+                    'status': 'training',
+                    'epoch': epoch,
+                    'total_epochs': epochs,
+                    'batch': batch_idx,
+                    'total_batches': total_batches,
+                    'loss': loss_sum / count if count else 0.0,
+                    'accuracy': correct / count if count else 0.0,
+                })
+        metric = {'epoch': epoch, 'total_epochs': epochs, 'batch': total_batches, 'total_batches': total_batches, 'loss': loss_sum / count if count else 0.0, 'accuracy': correct / count if count else 0.0}
         history.append(metric)
         if progress:
-            progress({'status': 'training', **metric, 'total_epochs': epochs})
-    return model.state_dict(), {'samples': len(dataset), 'loss': history[-1]['loss'], 'accuracy': history[-1]['accuracy'], 'classes': dataset.classes, 'history': history, 'dataset': validation}
+            progress({'status': 'training', **metric})
+    # Report final per-class recall, not only aggregate training accuracy. A
+    # balanced data set can still hide a model that predicts one class for
+    # every image (the failure mode that must not be federated).
+    model.eval()
+    correct_by_class = [0] * num_classes
+    total_by_class = [0] * num_classes
+    with torch.no_grad():
+        for images, labels in DataLoader(dataset, batch_size=batch_size, shuffle=False):
+            predictions = model(images).argmax(dim=1)
+            for label, prediction in zip(labels.tolist(), predictions.tolist()):
+                total_by_class[label] += 1
+                correct_by_class[label] += int(label == prediction)
+    class_accuracy = {
+        dataset.classes[index]: {
+            'correct': correct_by_class[index],
+            'total': total_by_class[index],
+            'accuracy': correct_by_class[index] / total_by_class[index] if total_by_class[index] else 0.0,
+        }
+        for index in range(num_classes)
+    }
+    evaluation_accuracy = sum(correct_by_class) / len(dataset) if len(dataset) else 0.0
+    return model.state_dict(), {'samples': len(dataset), 'loss': history[-1]['loss'], 'accuracy': evaluation_accuracy, 'classes': dataset.classes, 'class_accuracy': class_accuracy, 'history': history, 'dataset': validation}
 
 def weighted_fedavg(updates: Iterable[tuple[OrderedDict, int]]) -> OrderedDict:
     updates = list(updates)

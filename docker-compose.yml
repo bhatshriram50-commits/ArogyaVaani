@@ -1,0 +1,80 @@
+services:
+  mongodb:
+    image: mongo:8
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "127.0.0.1:27017:27017"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - mongodb
+    environment:
+      # Local demonstration only. Put frontend and API behind HTTPS and set
+      # NODE_ENV=production for an internet-facing deployment.
+      NODE_ENV: development
+      PORT: 4000
+      MONGODB_URI: mongodb://mongodb:27017/arogyavaani
+      MONGODB_DB: arogyavaani
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?set ADMIN_EMAIL in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      MODEL_ARTIFACT_ROOT: /var/lib/arogyavaani/models
+      MODEL_UPDATE_MAX_BYTES: ${MODEL_UPDATE_MAX_BYTES:-200mb}
+    volumes:
+      - model-artifacts:/var/lib/arogyavaani/models
+    ports:
+      - "127.0.0.1:4000:4000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:5173:80"
+
+  hospital-1-ml:
+    build:
+      context: .
+      dockerfile: ml/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - hospital-1-data:/data
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  hospital-2-ml:
+    build:
+      context: .
+      dockerfile: ml/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - hospital-2-data:/data
+    ports:
+      - "127.0.0.1:8001:8000"
+
+  hospital-3-ml:
+    build:
+      context: .
+      dockerfile: ml/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - hospital-3-data:/data
+    ports:
+      - "127.0.0.1:8002:8000"
+
+volumes:
+  mongo-data:
+  model-artifacts:
+  hospital-1-data:
+  hospital-2-data:
+  hospital-3-data:

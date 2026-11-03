@@ -1,41 +1,522 @@
-import { useEffect, useState } from 'react';
-import { Activity, CheckCircle2, ClipboardList, Globe2, HeartPulse, History, Network, RefreshCw, Server, ShieldCheck, Users } from 'lucide-react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { Activity, ClipboardList, Globe2, HeartPulse, History, Network, RefreshCw, ShieldCheck, Users, Play, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { centralApiUrl, tokenHeaders } from './config';
+import { fallbackTasks, type MedicalTask, type MedicalTaskId } from './medicalTasks';
 
 type View = 'dashboard' | 'hospitals' | 'federated-rounds' | 'models' | 'performance' | 'audit-logs';
-type Dashboard = { totalHospitals: number; activeHospitals: number; currentRound: number; globalVersion: number; updatesReceived: number; systemHealth: string; activeRound?: Round };
-type Hospital = { _id?: string; hospitalName?: string; email: string; createdAt?: string };
-type Round = { id?: string; _id?: string; round: number; status: string; baseGlobalModelVersion: number; resultingGlobalModelVersion?: number; expectedParticipantCount: number; submittedParticipantCount: number; remainingParticipantCount: number; totalSamples: number; participantHospitalIds: string[]; submittedHospitalIds: string[]; createdAt?: string; completedAt?: string; version?: number; hospitals?: number; samples?: number; aggregationTimestamp?: string };
-type Model = { _id?: string; version: number; round: number; samples: number; hospitals: number; status: string; createdAt?: string };
-type Update = { _id?: string; hospitalId: string; round: number; samples: number; payloadBytes?: number; receivedAt?: string; metrics?: { loss?: number; accuracy?: number } };
-type Audit = { _id?: string; actorId: string; actorRole: string; action: string; target?: string; createdAt?: string };
-const nav: Array<[View, string, typeof Activity]> = [['dashboard', 'Overview', Activity], ['hospitals', 'Connected Hospitals', Users], ['federated-rounds', 'Federated Rounds', Network], ['models', 'Global Model', Globe2], ['performance', 'Performance', ClipboardList], ['audit-logs', 'Audit Logs', History]];
-const api = async <T,>(path: string, options: RequestInit = {}) => { const response = await fetch(centralApiUrl + path, { ...options, headers: { ...options.headers, ...tokenHeaders() } }); const data = response.status === 204 ? undefined : await response.json(); if (!response.ok) { if (response.status === 401) window.dispatchEvent(new Event('arogyavaani:session-expired')); throw new Error(data?.message ?? 'Request failed.'); } return data as T; };
-const date = (value?: string) => value ? new Date(value).toLocaleString() : 'Not available';
-function Metric({ label, value, detail }: { label: string; value: string; detail: string }) { return <div className="metric"><div className="metric-label">{label}<span className="metric-dot" /></div><strong>{value}</strong><small>{detail}</small></div>; }
-function Empty({ children }: { children: string }) { return <section className="panel empty-state">{children}</section>; }
+type Hospital = { hospitalName?: string; email: string; createdAt?: string };
+type Round = {
+  task: MedicalTaskId;
+  round: number;
+  status: string;
+  baseGlobalModelVersion: number;
+  resultingGlobalModelVersion?: number;
+  expectedParticipantCount: number;
+  submittedParticipantCount: number;
+  remainingParticipantCount: number;
+  participantHospitalIds: string[];
+  submittedHospitalIds: string[];
+  completedAt?: string;
+  aggregationError?: string;
+};
+type Dashboard = {
+  totalHospitals: number;
+  globalVersion: number;
+  activeRound?: Round;
+  updatesReceived?: number;
+};
+type Model = {
+  task: MedicalTaskId;
+  version: number;
+  round: number;
+  samples: number;
+  hospitals: number;
+  status: string;
+  architecture?: string;
+  checksum?: string;
+  createdAt?: string;
+};
+type Update = {
+  task: MedicalTaskId;
+  hospitalId: string;
+  round: number;
+  samples: number;
+  baseVersion?: number;
+  receivedAt?: string;
+  payloadBytes?: number;
+  checksum?: string;
+  status?: string;
+  architecture?: string;
+  metrics?: { accuracy?: number; loss?: number };
+};
+type Audit = {
+  actorId: string;
+  actorRole: string;
+  action: string;
+  target?: string;
+  createdAt?: string;
+  details?: { task?: MedicalTaskId };
+};
 
-export function Admin({ onExit, path, onNavigate }: { onExit: () => void; path: string; onNavigate: (path: string) => void }) {
-  const requested = path.replace('/admin/', '') as View; const view: View = nav.some(([id]) => id === requested) ? requested : 'dashboard';
-  const [dashboard, setDashboard] = useState<Dashboard | null>(null); const [hospitals, setHospitals] = useState<Hospital[]>([]); const [rounds, setRounds] = useState<Round[]>([]); const [models, setModels] = useState<Model[]>([]); const [updates, setUpdates] = useState<Update[]>([]); const [audits, setAudits] = useState<Audit[]>([]); const [selected, setSelected] = useState<string[]>([]); const [error, setError] = useState(''); const [loading, setLoading] = useState(true); const [busy, setBusy] = useState(false);
-  const refresh = async () => { setLoading(true); setError(''); try { if (view === 'dashboard') { const [nextDashboard, nextHospitals, nextRounds] = await Promise.all([api<Dashboard>('/api/admin/dashboard'), api<Hospital[]>('/api/admin/hospitals'), api<Round[]>('/api/admin/federated-rounds')]); setDashboard(nextDashboard); setHospitals(nextHospitals); setRounds(nextRounds); } else if (view === 'hospitals') setHospitals(await api('/api/admin/hospitals')); else if (view === 'federated-rounds') setRounds(await api('/api/admin/federated-rounds')); else if (view === 'models') setModels(await api('/api/admin/models')); else if (view === 'performance') setUpdates(await api('/api/admin/model-updates')); else if (view === 'audit-logs') setAudits(await api('/api/admin/audit-logs')); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to load administrator data.'); } finally { setLoading(false); } };
-  useEffect(() => { void refresh(); const poll = view === 'dashboard' || view === 'federated-rounds' ? window.setInterval(() => void refresh(), 5000) : undefined; return () => { if (poll) window.clearInterval(poll); }; }, [view]);
-  const createRound = async () => { setBusy(true); setError(''); try { await api('/api/federated/rounds', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ participantHospitalIds: selected }) }); setSelected([]); await refresh(); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to create federated round.'); } finally { setBusy(false); } };
-  const cancelRound = async (round: number) => { setBusy(true); setError(''); try { await api(`/api/federated/rounds/${round}/cancel`, { method: 'POST' }); await refresh(); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to cancel federated round.'); } finally { setBusy(false); } };
-  const aggregate = createRound;
-  const current = rounds.find(item => !['COMPLETED', 'CANCELLED', 'CLOSED'].includes(item.status)) ?? dashboard?.activeRound; const participation = current?.expectedParticipantCount ? Math.round(current.submittedParticipantCount / current.expectedParticipantCount * 100) : 0;
-  const heading: Record<View, [string, string]> = { dashboard: ['Network overview', 'Monitor federated activity without accessing hospital datasets.'], hospitals: ['Connected hospitals', 'Registered hospital metadata and access to the federated network.'], 'federated-rounds': ['Federated rounds', 'Completed rounds and aggregation metadata.'], models: ['Global model', 'Aggregated global-model metadata only.'], performance: ['Performance', 'Metrics submitted with model updates, when available.'], 'audit-logs': ['Audit logs', 'Privacy-safe administrative activity.'] };
-  const content = () => {
-    if (loading) return <Empty>Loading administrator data…</Empty>;
-    if (view === 'dashboard' && dashboard) return <><section className="metrics-grid"><Metric label="REGISTERED HOSPITALS" value={String(dashboard.totalHospitals)} detail="Accounts in the network" /><Metric label="ACTIVE ROUND" value={current ? String(current.round) : 'None'} detail={current?.status ?? 'Create a participant round'} /><Metric label="GLOBAL MODEL" value={dashboard.globalVersion ? `v${dashboard.globalVersion}` : 'v0'} detail={current ? `Round base: v${current.baseGlobalModelVersion}` : 'No model aggregated'} /><Metric label="ROUND PROGRESS" value={current ? `${current.submittedParticipantCount}/${current.expectedParticipantCount}` : '—'} detail={current ? `${current.remainingParticipantCount} hospitals pending` : 'No active round'} /></section><section className="panel"><div className="panel-title"><div><h2>Federated round management</h2><p>Select the hospitals required for the next asynchronous round. Aggregation begins only after every selected hospital submits.</p></div><button className="button primary" disabled={busy || !selected.length || Boolean(current)} onClick={() => void createRound()}>{busy ? 'Creating…' : `Start round (${selected.length})`}</button></div>{current ? <><div className="round-stats"><div><b>v{current.baseGlobalModelVersion}</b><span>Base model</span></div><div><b>{current.submittedParticipantCount}<small> / {current.expectedParticipantCount}</small></b><span>{current.status}</span></div><div><b>{current.remainingParticipantCount}</b><span>Hospitals pending</span></div></div><div className="progress"><span style={{ width: `${participation}%` }} /></div><p>{current.participantHospitalIds.map(email => `${current.submittedHospitalIds.includes(email) ? '✓' : '⌛'} ${email}`).join(' · ')}</p>{['ACTIVE', 'WAITING_FOR_UPDATES', 'READY_FOR_AGGREGATION'].includes(current.status) && <button className="button secondary" disabled={busy} onClick={() => void cancelRound(current.round)}>Cancel incomplete round</button>}</> : <div className="hospital-table"><table><thead><tr><th>SELECT</th><th>HOSPITAL</th><th>EMAIL</th></tr></thead><tbody>{hospitals.map(item => <tr key={item.email}><td><input type="checkbox" checked={selected.includes(item.email)} onChange={() => setSelected(value => value.includes(item.email) ? value.filter(email => email !== item.email) : [...value, item.email])} /></td><td>{item.hospitalName ?? 'Not provided'}</td><td>{item.email}</td></tr>)}</tbody></table></div>}</section></>;
-    if (view === 'dashboard' && dashboard) return <><section className="metrics-grid"><Metric label="REGISTERED HOSPITALS" value={String(dashboard.totalHospitals)} detail={`${dashboard.activeHospitals} submitted in current round`} /><Metric label="CURRENT ROUND" value={String(dashboard.currentRound)} detail={dashboard.updatesReceived ? 'Updates available' : 'Waiting for updates'} /><Metric label="GLOBAL MODEL" value={dashboard.globalVersion ? `v${dashboard.globalVersion}` : 'Not available'} detail={current?.status ?? 'No model yet'} /><Metric label="UPDATES RECEIVED" value={String(dashboard.updatesReceived)} detail={`${participation}% of registered hospitals`} /></section><div className="admin-grid"><section className="panel"><div className="panel-title"><div><h2>Aggregation control</h2><p>Runs protected weighted FedAvg on available binary model updates.</p></div><button className="button primary" disabled={busy || !dashboard.updatesReceived} onClick={() => void aggregate()}><Network size={16} /> {busy ? 'Aggregating…' : 'Aggregate updates'}</button></div><div className="admin-progress"><div><strong>{participation}%</strong><span>participation</span></div><div className="progress"><span style={{ width: `${participation}%` }} /></div><div><strong>{dashboard.updatesReceived}</strong><span>updates</span></div></div><div className="admin-status"><CheckCircle2 size={17} /><span><b>Privacy boundary enforced.</b> The central service stores model updates and operational metadata, not patient images.</span></div></section><section className="panel"><h2>System health</h2><div className="health-row"><Server size={17} /><span>Coordination API</span><b>{dashboard.systemHealth}</b></div><div className="health-row"><Globe2 size={17} /><span>Global model store</span><b>{dashboard.globalVersion ? 'Available' : 'No model yet'}</b></div><div className="health-row"><Activity size={17} /><span>Active round</span><b>{dashboard.updatesReceived ? 'Updates received' : 'Waiting'}</b></div></section></div></>;
-    if (view === 'hospitals') return hospitals.length ? <Table headings={['Hospital', 'Email', 'Registered']} rows={hospitals.map(item => [item.hospitalName ?? 'Not provided', item.email, date(item.createdAt)])} /> : <Empty>No hospitals connected yet.</Empty>;
-    if (view === 'federated-rounds') return rounds.length ? <Table headings={['Round', 'Base model', 'Progress', 'Participants', 'Status', 'Result']} rows={rounds.map(item => [String(item.round), `v${item.baseGlobalModelVersion}`, `${item.submittedParticipantCount}/${item.expectedParticipantCount}`, item.participantHospitalIds.map(email => item.submittedHospitalIds.includes(email) ? `✓ ${email}` : `⌛ ${email}`).join(', '), item.status, item.resultingGlobalModelVersion ? `v${item.resultingGlobalModelVersion}` : date(item.completedAt)])} /> : <Empty>No federated rounds yet.</Empty>;
-    if (view === 'models') return models.length ? <Table headings={['Version', 'Round', 'Hospitals', 'Samples', 'Status', 'Created']} rows={models.map(item => [`v${item.version}`, String(item.round), String(item.hospitals), String(item.samples), item.status, date(item.createdAt)])} /> : <Empty>No global model available.</Empty>;
-    if (view === 'performance') return updates.length ? <Table headings={['Hospital', 'Round', 'Samples', 'Loss', 'Accuracy']} rows={updates.map(item => [item.hospitalId, String(item.round), String(item.samples), item.metrics?.loss === undefined ? 'Not reported' : item.metrics.loss.toFixed(4), item.metrics?.accuracy === undefined ? 'Not reported' : `${(item.metrics.accuracy * 100).toFixed(1)}%`])} /> : <Empty>No performance metadata has been submitted.</Empty>;
-    if (view === 'audit-logs') return audits.length ? <Table headings={['Time', 'Actor', 'Role', 'Action', 'Target']} rows={audits.map(item => [date(item.createdAt), item.actorId, item.actorRole, item.action, item.target ?? '—'])} /> : <Empty>No audit events available.</Empty>;
-    return null;
+const nav: Array<[View, string, typeof Activity]> = [
+  ['dashboard', 'Overview', Activity],
+  ['hospitals', 'Connected Hospitals', Users],
+  ['federated-rounds', 'Federated Rounds', Network],
+  ['models', 'Global Models', Globe2],
+  ['performance', 'Confirmed Updates', ClipboardList],
+  ['audit-logs', 'Audit Logs', History],
+];
+
+const api = async <T,>(path: string, options: RequestInit = {}) => {
+  const r = await fetch(centralApiUrl + path, {
+    ...options,
+    headers: { ...options.headers, ...tokenHeaders() },
+  });
+  const b = r.status === 204 ? undefined : await r.json();
+  if (!r.ok) throw new Error(b?.message ?? 'Request failed.');
+  return b as T;
+};
+
+const date = (value?: string) => (value ? new Date(value).toLocaleString() : 'Not available');
+
+const Table = ({ headings, rows }: { headings: string[]; rows: ReactNode[][] }) => (
+  <section className="panel hospital-table">
+    <table>
+      <thead>
+        <tr>
+          {headings.map(h => (
+            <th key={h}>{h}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row, i) => (
+          <tr key={i}>
+            {row.map((cell, j) => (
+              <td key={j}>{cell}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </section>
+);
+
+export function Admin({
+  onExit,
+  path,
+  onNavigate,
+}: {
+  onExit: () => void;
+  path: string;
+  onNavigate: (path: string) => void;
+}) {
+  const requested = path.replace('/admin/', '') as View;
+  const view = nav.some(([id]) => id === requested) ? requested : 'dashboard';
+  const [task, setTask] = useState<MedicalTaskId>('PNEUMONIA');
+  const [tasks, setTasks] = useState<MedicalTask[]>(fallbackTasks);
+  const [hospitals, setHospitals] = useState<Hospital[]>([]);
+  const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  const [rounds, setRounds] = useState<Round[]>([]);
+  const [models, setModels] = useState<Model[]>([]);
+  const [updates, setUpdates] = useState<Update[]>([]);
+  const [audits, setAudits] = useState<Audit[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [error, setError] = useState('');
+  const [successNotice, setSuccessNotice] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const query = '?task=' + task;
+
+  const hospitalName = (id: string) => hospitals.find(h => h.email === id)?.hospitalName?.trim() || id;
+
+  const refresh = async (background = false) => {
+    if (!background) {
+      setLoading(true);
+      setError('');
+    }
+    try {
+      const [fetchedTasks, fetchedHospitals] = await Promise.all([
+        api<MedicalTask[]>('/api/medical-tasks'),
+        api<Hospital[]>('/api/admin/hospitals'),
+      ]);
+      setTasks(fetchedTasks);
+      setHospitals(fetchedHospitals);
+
+      if (view === 'dashboard') {
+        const [d, r, u] = await Promise.all([
+          api<Dashboard>('/api/admin/dashboard' + query),
+          api<Round[]>('/api/admin/federated-rounds' + query),
+          api<Update[]>('/api/admin/model-updates' + query),
+        ]);
+        setDashboard(d);
+        setRounds(r);
+        setUpdates(u);
+      } else if (view === 'hospitals') {
+        // Hospitals already loaded above
+      } else if (view === 'federated-rounds') {
+        setRounds(await api('/api/admin/federated-rounds' + query));
+      } else if (view === 'models') {
+        setModels(await api('/api/admin/models' + query));
+      } else if (view === 'performance') {
+        setUpdates(await api('/api/admin/model-updates' + query));
+      } else {
+        setAudits(await api('/api/admin/audit-logs' + query));
+      }
+    } catch (cause) {
+      if (!background) setError(cause instanceof Error ? cause.message : 'Unable to load administrator data.');
+    } finally {
+      if (!background) setLoading(false);
+    }
   };
-  return <div className="admin-shell"><header className="admin-top"><div className="brand"><div className="brand-mark"><HeartPulse size={21} /></div><div><b>Arogya<span>Vaani</span></b><small>Network operations</small></div></div><div className="admin-user"><div className="avatar">AD</div><div><b>Administrator session</b><span>Role-restricted access</span></div><button onClick={onExit}>Sign out</button></div></header><div className="admin-tabs" aria-label="Administrator navigation">{nav.map(([id, label, Icon]) => <button className={view === id ? 'active' : ''} key={id} onClick={() => onNavigate(`/admin/${id}`)}><Icon size={15} />{label}</button>)}</div><main className="admin-main"><section className="page-heading"><div><div className="eyebrow">ADMINISTRATION</div><h1>{heading[view][0]}</h1><p>{heading[view][1]}</p></div><button className="button secondary" onClick={() => void refresh()} disabled={loading}><RefreshCw size={15} /> {loading ? 'Refreshing…' : 'Refresh'}</button></section>{error && <div className="form-error" role="alert">{error}</div>}{content()}<div className="admin-privacy"><ShieldCheck size={19} /><span><b>Privacy-preserved monitoring</b> Administrators see model and participation metadata, never hospital image collections.</span></div></main></div>;
+
+  useEffect(() => {
+    void refresh();
+    const timer = ['dashboard', 'federated-rounds', 'performance', 'models'].includes(view)
+      ? window.setInterval(() => void refresh(true), 5000)
+      : undefined;
+    return () => {
+      if (timer) window.clearInterval(timer);
+    };
+  }, [view, task]);
+
+  const createRound = async () => {
+    if (!selected.length) return setError('Select at least one registered hospital to participate.');
+    setBusy(true);
+    setError('');
+    setSuccessNotice('');
+    try {
+      await api('/api/federated/rounds', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task, participantHospitalIds: selected }),
+      });
+      setSelected([]);
+      setSuccessNotice(`Federated learning round created for ${task} with ${selected.length} hospital participants.`);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to create round.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancel = async (round: number) => {
+    setBusy(true);
+    setError('');
+    setSuccessNotice('');
+    try {
+      await api(`/api/federated/rounds/${round}/cancel${query}`, { method: 'POST' });
+      setSuccessNotice(`Round ${round} cancelled.`);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to cancel round.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const triggerAggregation = async (round: number) => {
+    setBusy(true);
+    setError('');
+    setSuccessNotice('');
+    try {
+      await api(`/api/federated/rounds/${round}/aggregate${query}`, { method: 'POST' });
+      setSuccessNotice(`Federated averaging aggregation triggered for Round ${round}.`);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to trigger aggregation.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const active = rounds.find(round => !['COMPLETED', 'CANCELLED', 'CLOSED'].includes(round.status)) ?? dashboard?.activeRound;
+  const progress = active?.expectedParticipantCount
+    ? Math.round((active.submittedParticipantCount / active.expectedParticipantCount) * 100)
+    : 0;
+
+  const updateRows = updates.length
+    ? updates.slice(0, 25).map(update => [
+        <div key={update.hospitalId} style={{ display: 'flex', flexDirection: 'column' }}>
+          <strong>{hospitalName(update.hospitalId)}</strong>
+          <small>{update.hospitalId}</small>
+        </div>,
+        String(update.round),
+        update.samples.toLocaleString(),
+        `v${update.baseVersion ?? 0}`,
+        date(update.receivedAt),
+        update.payloadBytes ? `${(update.payloadBytes / 1024 / 1024).toFixed(1)} MB (AVM1)` : 'Stored',
+        <span key="status" className="status-pill success">
+          <CheckCircle2 size={14} /> Stored
+        </span>,
+      ])
+    : [['No centrally confirmed parameter submissions for this task yet.', '—', '—', '—', '—', '—', '—']];
+
+  let content: ReactNode;
+  if (loading) {
+    content = <section className="panel empty-state">Loading real-time federation data…</section>;
+  } else if (view === 'dashboard') {
+    content = (
+      <>
+        <section className="metrics-grid">
+          <div className="metric">
+            <div className="metric-label">REGISTERED HOSPITALS</div>
+            <strong>{dashboard?.totalHospitals ?? hospitals.length}</strong>
+            <small>Total network authorized accounts</small>
+          </div>
+          <div className="metric">
+            <div className="metric-label">{task} ROUND</div>
+            <strong>{active ? `Round ${active.round}` : 'None'}</strong>
+            <small>{active?.status ?? 'No active round running'}</small>
+          </div>
+          <div className="metric">
+            <div className="metric-label">GLOBAL MODEL</div>
+            <strong>v{dashboard?.globalVersion ?? 0}</strong>
+            <small>Immutable checkpoint per task</small>
+          </div>
+          <div className="metric">
+            <div className="metric-label">ROUND PROGRESS</div>
+            <strong>{active ? `${active.submittedParticipantCount} / ${active.expectedParticipantCount}` : '—'}</strong>
+            <small>{active ? `${active.remainingParticipantCount} updates remaining` : 'Idle coordinator'}</small>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-title">
+            <div>
+              <h2>{active ? `${task} · Round ${active.round}` : `Create New Federated Round · ${task}`}</h2>
+              <p>
+                {active
+                  ? `Base model v${active.baseGlobalModelVersion} · ${active.submittedParticipantCount} of ${active.expectedParticipantCount} updates submitted`
+                  : 'Select participating hospitals to freeze participant roster for this round.'}
+              </p>
+            </div>
+            {!active && (
+              <button
+                className="button primary"
+                disabled={busy || !selected.length}
+                onClick={() => void createRound()}
+              >
+                {busy ? 'Creating…' : `Start Round with ${selected.length} Hospitals`}
+              </button>
+            )}
+          </div>
+
+          {active ? (
+            <>
+              <div className="progress">
+                <span style={{ width: `${progress}%` }} />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '14px 0 8px' }}>
+                <span style={{ fontSize: '15px', fontWeight: 700, color: 'var(--navy)' }}>Selected Round Participants ({active.participantHospitalIds.length})</span>
+                <span style={{ fontSize: '14px', color: 'var(--text-muted)' }}>{active.submittedParticipantCount} Submitted, {active.remainingParticipantCount} Pending</span>
+              </div>
+
+              <div className="participant-list admin-participants">
+                {active.participantHospitalIds.map(id => {
+                  const hasSubmitted = active.submittedHospitalIds.includes(id);
+                  return (
+                    <div key={id}>
+                      <div>
+                        <strong>{hospitalName(id)}</strong>
+                        <small style={{ display: 'block', color: 'var(--text-muted)', marginTop: '2px' }}>{id}</small>
+                      </div>
+                      <span className={`status-pill ${hasSubmitted ? 'success' : ''}`}>
+                        {hasSubmitted ? <CheckCircle2 size={14} /> : null}
+                        {hasSubmitted ? 'Parameters Submitted' : 'Waiting for Local Run'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {active.aggregationError && (
+                <div className="form-error" style={{ marginTop: '14px' }}>
+                  <AlertCircle size={18} /> Aggregation notice: {active.aggregationError}
+                </div>
+              )}
+
+              <div className="button-row" style={{ marginTop: '16px' }}>
+                {active.status === 'READY_FOR_AGGREGATION' && (
+                  <button className="button primary" disabled={busy} onClick={() => void triggerAggregation(active.round)}>
+                    <Play size={16} /> Run Federated Aggregation Now
+                  </button>
+                )}
+                {['ACTIVE', 'WAITING_FOR_UPDATES', 'READY_FOR_AGGREGATION'].includes(active.status) && (
+                  <button className="button secondary" disabled={busy} onClick={() => void cancel(active.round)}>
+                    Cancel Incomplete Round
+                  </button>
+                )}
+              </div>
+            </>
+          ) : (
+            <Table
+              headings={['Select', 'Hospital Name', 'Email Account', 'Registered Date']}
+              rows={hospitals.map(h => [
+                <input
+                  key={h.email}
+                  type="checkbox"
+                  style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                  checked={selected.includes(h.email)}
+                  onChange={() =>
+                    setSelected(value =>
+                      value.includes(h.email) ? value.filter(email => email !== h.email) : [...value, h.email]
+                    )
+                  }
+                />,
+                h.hospitalName ?? 'Not provided',
+                h.email,
+                date(h.createdAt),
+              ])}
+            />
+          )}
+        </section>
+
+        <section className="panel">
+          <div className="panel-title">
+            <div>
+              <h2>Confirmed Model Updates ({updates.length})</h2>
+              <p>Durably persisted AVM1 mathematical parameter artifacts received by the central server</p>
+            </div>
+          </div>
+          <Table headings={['Hospital', 'Round', 'Samples', 'Base Model', 'Received At', 'Artifact Size', 'Verification']} rows={updateRows} />
+        </section>
+      </>
+    );
+  } else if (view === 'hospitals') {
+    content = (
+      <Table
+        headings={['Hospital Name', 'Email Account', 'Registration Timestamp']}
+        rows={hospitals.map(h => [h.hospitalName ?? 'Not provided', h.email, date(h.createdAt)])}
+      />
+    );
+  } else if (view === 'federated-rounds') {
+    content = (
+      <Table
+        headings={['Medical Task', 'Round', 'Base Model', 'Submitted / Expected', 'Status', 'Completed / Result']}
+        rows={rounds.map(round => [
+          round.task,
+          `Round ${round.round}`,
+          `v${round.baseGlobalModelVersion}`,
+          `${round.submittedParticipantCount} / ${round.expectedParticipantCount}`,
+          <span key={round.round} className={`status-pill ${round.status === 'COMPLETED' ? 'success' : round.status === 'CANCELLED' ? 'red' : 'blue'}`}>
+            {round.status}
+          </span>,
+          round.resultingGlobalModelVersion ? `Global Model v${round.resultingGlobalModelVersion}` : date(round.completedAt),
+        ])}
+      />
+    );
+  } else if (view === 'models') {
+    content = (
+      <Table
+        headings={['Medical Task', 'Version', 'From Round', 'Contributing Hospitals', 'Total Samples', 'Model Status']}
+        rows={models.map(model => [
+          model.task,
+          `v${model.version}`,
+          `Round ${model.round}`,
+          `${model.hospitals} hospitals`,
+          model.samples.toLocaleString(),
+          <span key={model.version} className={`status-pill ${model.status === 'ACTIVE' ? 'success' : ''}`}>
+            {model.status}
+          </span>,
+        ])}
+      />
+    );
+  } else if (view === 'performance') {
+    content = (
+      <section className="panel">
+        <div className="panel-title">
+          <div>
+            <h2>Confirmed Model Updates ({updates.length})</h2>
+            <p>Cryptographically validated mathematical model weights stored in MongoDB and object artifact storage</p>
+          </div>
+        </div>
+        <Table headings={['Hospital', 'Round', 'Samples', 'Base Model', 'Received At', 'Artifact Size', 'Verification']} rows={updateRows} />
+      </section>
+    );
+  } else {
+    content = (
+      <Table
+        headings={['Timestamp', 'Task', 'Actor Email', 'Role', 'Action', 'Target Entity']}
+        rows={audits.map(audit => [
+          date(audit.createdAt),
+          audit.details?.task ?? task,
+          audit.actorId,
+          audit.actorRole,
+          audit.action,
+          audit.target ?? '—',
+        ])}
+      />
+    );
+  }
+
+  return (
+    <div className="admin-shell">
+      <header className="admin-top">
+        <div className="brand">
+          <div className="brand-mark">
+            <HeartPulse size={24} />
+          </div>
+          <div>
+            <b>Arogya<span>Vaani</span></b>
+            <small>Federation Network Operations Center</small>
+          </div>
+        </div>
+        <div className="admin-user">
+          <b>Administrator Session</b>
+          <button onClick={onExit}>Sign out</button>
+        </div>
+      </header>
+      <div className="admin-tabs">
+        {nav.map(([id, label, Icon]) => (
+          <button className={view === id ? 'active' : ''} key={id} onClick={() => onNavigate(`/admin/${id}`)}>
+            <Icon size={17} />
+            <span>{label}</span>
+          </button>
+        ))}
+      </div>
+      <main className="admin-main">
+        <section className="page-heading">
+          <div>
+            <div className="eyebrow">CENTRAL COORDINATOR</div>
+            <h1>{task} Operations</h1>
+            <p>Manage federation rounds, inspect received parameters, and trigger aggregation</p>
+          </div>
+          <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
+            <label>
+              Medical Task
+              <select
+                value={task}
+                onChange={event => {
+                  setTask(event.target.value as MedicalTaskId);
+                  setSelected([]);
+                }}
+              >
+                {tasks.map(item => (
+                  <option value={item.taskId} key={item.taskId}>{item.displayName}</option>
+                ))}
+              </select>
+            </label>
+            <button className="button secondary" onClick={() => void refresh()}>
+              <RefreshCw size={16} /> Refresh
+            </button>
+          </div>
+        </section>
+
+        {successNotice && <div className="form-notice"><CheckCircle2 size={18} /> {successNotice}</div>}
+        {error && <div className="form-error"><AlertCircle size={18} /> {error}</div>}
+
+        {content}
+
+        <div className="admin-privacy">
+          <ShieldCheck size={22} />
+          <span>
+            <b>Privacy-Preserved Monitoring:</b> Administrators inspect strictly mathematical updates (weight matrices, shapes, sample counts) and coordination audit trails. Raw patient images remain exclusively at hospital edge nodes.
+          </span>
+        </div>
+      </main>
+    </div>
+  );
 }
-function Table({ headings, rows }: { headings: string[]; rows: string[][] }) { return <section className="panel hospital-table"><table><thead><tr>{headings.map(heading => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>)}</tbody></table></section>; }
