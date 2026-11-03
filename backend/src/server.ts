@@ -56,7 +56,9 @@ const googleClient = googleConfigured ? new OAuth2Client(googleClientId) : null;
 let databaseAvailable = false;
 let databaseState: 'not-configured' | 'connecting' | 'connected' | 'error' = process.env.MONGODB_URI ? 'connecting' : 'not-configured';
 let databaseError = '';
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
+}));
 const allowedOrigins = configuredFrontendOrigins;
 const localDevelopmentOrigin = (origin: string) => isLocalhost(origin);
 app.use(cors({
