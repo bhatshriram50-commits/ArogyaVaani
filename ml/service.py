@@ -29,8 +29,14 @@ MAX_PREDICTION_BYTES = int(os.environ.get('MAX_PREDICTION_BYTES', str(50 * 1024 
 # submission send JSON and therefore require a CORS preflight. Vite may move
 # to another local port when 5173 is occupied; permit loopback development
 # origins without opening the local trainer to arbitrary network hosts.
-allowed_origins = [origin.strip() for origin in os.environ.get('LOCAL_FRONTEND_ORIGIN', 'http://localhost:5173,http://127.0.0.1:5173').split(',') if origin.strip()]
-app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_origin_regex=r'^https?://(localhost|127\.0\.0\.1)(?::\d+)?$', allow_methods=['GET', 'POST', 'OPTIONS'], allow_headers=['Content-Type', 'Authorization', 'X-ArogyaVaani-Local-Token', 'Access-Control-Request-Private-Network', '*'])
+allowed_origins = [origin.strip().rstrip('/') for origin in os.environ.get('LOCAL_FRONTEND_ORIGIN', '').split(',') if origin.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins if allowed_origins else ['*'],
+    allow_origin_regex=r'^(https?://(localhost|127\.0\.0\.1)(?::\d+)?|https://.*\.vercel\.app)$',
+    allow_methods=['GET', 'POST', 'OPTIONS'],
+    allow_headers=['Content-Type', 'Authorization', 'X-ArogyaVaani-Local-Token', 'Access-Control-Request-Private-Network', '*'],
+)
 training_status: dict = {'status': 'idle'}
 training_jobs: dict[str, dict] = {}
 latest_training_job: str | None = None

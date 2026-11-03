@@ -134,20 +134,25 @@ function Overview({ setView }: { setView: (view: View) => void }) {
         const availableVersion = b.globalModel?.version ?? 0;
         const assignment = availableVersion > 0 ? `${activeTask}:${availableVersion}` : '';
         if (assignment && assignment !== syncedModelRef.current) {
-          const local = await fetch(localMlUrl + '/federated/download-global', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...localServiceHeaders() },
-            body: JSON.stringify({
-              task: activeTask,
-              api_url: centralApiUrl,
-              token: sessionStorage.getItem('arogyavaani_token'),
-              expected_version: availableVersion,
-            }),
-          });
-          const result = await local.json();
-          if (!local.ok) throw new Error(result.detail ?? 'Unable to synchronize the assigned global model.');
-          syncedModelRef.current = assignment;
-          setSyncNotice(`Latest ${activeTask} global model v${result.version} is synchronized in the local training service.`);
+          try {
+            const local = await fetch(localMlUrl + '/federated/download-global', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...localServiceHeaders() },
+              body: JSON.stringify({
+                task: activeTask,
+                api_url: centralApiUrl,
+                token: sessionStorage.getItem('arogyavaani_token'),
+                expected_version: availableVersion,
+              }),
+            });
+            if (local.ok) {
+              const result = await local.json();
+              syncedModelRef.current = assignment;
+              setSyncNotice(`Latest ${activeTask} global model v${result.version} is synchronized in the local training service.`);
+            }
+          } catch {
+            // Local hospital ML agent may still be starting or offline
+          }
         }
         setError('');
       } catch (e) {
