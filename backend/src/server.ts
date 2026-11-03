@@ -23,16 +23,32 @@ const jwtSecret = process.env.JWT_SECRET;
 const production = process.env.NODE_ENV === 'production';
 const persistenceRequired = production;
 const artifactRoot = path.resolve(process.env.MODEL_ARTIFACT_ROOT ?? fileURLToPath(new URL('../model_artifacts', import.meta.url)));
-const configuredFrontendOrigins = (process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173').split(',').map(origin => origin.trim()).filter(Boolean);
+const rawFrontendOrigin = process.env.FRONTEND_ORIGIN?.trim();
+const isLocalhost = (origin: string) => /^https?:\/\/(localhost|127\.0\.0\.1)(?::\d+)?$/i.test(origin);
+const configuredFrontendOrigins = (rawFrontendOrigin ? rawFrontendOrigin.split(',') : ['http://localhost:5173'])
+  .map(origin => origin.trim().replace(/\/+$/, ''))
+  .filter(Boolean)
+  .map(origin => {
+    if (!/^https?:\/\//i.test(origin) && origin !== '*' && !isLocalhost(`http://${origin}`)) {
+      return `https://${origin}`;
+    }
+    return origin;
+  });
+
 if (production) {
   const configurationErrors = [
     !jwtSecret || jwtSecret.length < 32 ? 'JWT_SECRET must be at least 32 characters' : '',
     !process.env.MONGODB_URI ? 'MONGODB_URI is required' : '',
     !process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD ? 'ADMIN_EMAIL and ADMIN_PASSWORD are required' : '',
     !artifactRoot ? 'MODEL_ARTIFACT_ROOT is required' : '',
-    !configuredFrontendOrigins.length || configuredFrontendOrigins.some(origin => !origin.startsWith('https://')) ? 'FRONTEND_ORIGIN must contain HTTPS origins' : '',
+    rawFrontendOrigin && configuredFrontendOrigins.some(origin => origin !== '*' && !origin.startsWith('https://') && !isLocalhost(origin))
+      ? 'FRONTEND_ORIGIN must contain HTTPS or localhost origins'
+      : '',
   ].filter(Boolean);
   if (configurationErrors.length) throw new Error(`Unsafe production configuration: ${configurationErrors.join('; ')}`);
+  if (!rawFrontendOrigin) {
+    console.warn('WARN: FRONTEND_ORIGIN is not set in production. Set FRONTEND_ORIGIN to your HTTPS Vercel URL in your dashboard.');
+  }
 }
 const googleClientId = process.env.GOOGLE_CLIENT_ID;
 const googleConfigured = Boolean(googleClientId && !/^replace-with-|^YOUR_CLIENT_ID|^your[-_]/i.test(googleClientId));
@@ -42,10 +58,15 @@ let databaseState: 'not-configured' | 'connecting' | 'connected' | 'error' = pro
 let databaseError = '';
 app.use(helmet());
 const allowedOrigins = configuredFrontendOrigins;
-// Vite can choose a fallback port during local development. Keep that
-// convenience limited to loopback origins; deployed origins stay explicit.
-const localDevelopmentOrigin = (origin: string) => !production && /^http:\/\/(localhost|127\.0\.0\.1)(?::\d+)?$/.test(origin);
-app.use(cors({ origin: (origin, callback) => callback(null, !origin || allowedOrigins.includes(origin) || localDevelopmentOrigin(origin)) }));
+const localDevelopmentOrigin = (origin: string) => isLocalhost(origin);
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (!rawFrontendOrigin || allowedOrigins.includes('*')) return callback(null, true);
+    if (allowedOrigins.includes(origin) || localDevelopmentOrigin(origin)) return callback(null, true);
+    callback(null, false);
+  }
+}));
 // DenseNet state dictionaries are large even though they contain no image data. Keep
 // this independently configurable so the privacy boundary does not accidentally make
 // legitimate federated updates impossible to submit.
