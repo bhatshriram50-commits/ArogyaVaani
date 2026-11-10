@@ -12,11 +12,32 @@ export function Landing({ onLogin }: { onLogin: () => void }) {
 export function Auth({ startInSignup = false, onBack, onSuccess }: { startInSignup?: boolean; onBack: () => void; onSuccess: (token: string, role: Role) => void }) {
   const [mode, setMode] = useState<'login' | 'register' | 'google-onboarding'>(startInSignup ? 'register' : 'login');
   const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [confirmPassword, setConfirmPassword] = useState(''); const [hospitalName, setHospitalName] = useState(''); const [googleCredential, setGoogleCredential] = useState('');
-  const [showPassword, setShowPassword] = useState(false); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false); const [googleReady, setGoogleReady] = useState<boolean | null>(null); const googleRef = useRef<HTMLDivElement>(null);
+  const [showPassword, setShowPassword] = useState(false); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false);
   const frontendGoogleId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
-  const [googleClientId, setGoogleClientId] = useState(() => frontendGoogleId && !/^replace-with-|^YOUR_CLIENT_ID|^your[-_]/i.test(frontendGoogleId) ? frontendGoogleId : undefined);
+  const initialGoogleId = frontendGoogleId && !/^replace-with-|^YOUR_CLIENT_ID|^your[-_]/i.test(frontendGoogleId) ? frontendGoogleId : undefined;
+  const [googleClientId, setGoogleClientId] = useState<string | undefined>(initialGoogleId);
+  const [googleReady, setGoogleReady] = useState<boolean | null>(() => Boolean(initialGoogleId));
+  const googleRef = useRef<HTMLDivElement>(null);
   const isRegister = mode === 'register'; const isOnboarding = mode === 'google-onboarding';
-  useEffect(() => { fetch(centralApiUrl + '/api/auth/google/status').then(response => response.json()).then((data: { configured?: boolean; clientId?: string }) => { const clientId = data.clientId && !/^replace-with-|^YOUR_CLIENT_ID|^your[-_]/i.test(data.clientId) ? data.clientId : undefined; setGoogleClientId(current => current ?? clientId); setGoogleReady(Boolean(data.configured && (clientId || googleClientId))); }).catch(() => setGoogleReady(false)); }, []);
+  useEffect(() => {
+    fetch(centralApiUrl + '/api/auth/google/status')
+      .then(response => {
+        if (!response.ok) throw new Error();
+        return response.json();
+      })
+      .then((data: { configured?: boolean; clientId?: string }) => {
+        const clientId = data.clientId && !/^replace-with-|^YOUR_CLIENT_ID|^your[-_]/i.test(data.clientId) ? data.clientId : undefined;
+        if (clientId) {
+          setGoogleClientId(clientId);
+          setGoogleReady(true);
+        } else if (!initialGoogleId) {
+          setGoogleReady(false);
+        }
+      })
+      .catch(() => {
+        if (!initialGoogleId) setGoogleReady(false);
+      });
+  }, [initialGoogleId]);
   const completeGoogle = async (credential: string, onboarding = false) => { setBusy(true); setError(''); setNotice(''); try { const response = await fetch(centralApiUrl + '/api/auth/google', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(onboarding ? { idToken: credential, hospitalName } : { idToken: credential }) }); const data = await response.json(); if (!response.ok) { if (response.status === 400 && String(data.message).toLowerCase().includes('hospital name')) { setGoogleCredential(credential); setMode('google-onboarding'); setNotice('Add your hospital name to finish verified Google registration.'); return; } throw new Error(data.message ?? 'Google sign-in could not be completed.'); } onSuccess(data.token, data.role); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Google sign-in could not be completed.'); } finally { setBusy(false); } };
   useEffect(() => { if (!googleClientId || !googleReady || !googleRef.current || isOnboarding) return; let cancelled = false; const render = () => { if (!cancelled && window.google && googleRef.current) { window.google.accounts.id.initialize({ client_id: googleClientId, callback: response => response.credential ? void completeGoogle(response.credential) : setError('Google sign-in did not complete. Please try again.') }); googleRef.current.replaceChildren(); window.google.accounts.id.renderButton(googleRef.current, { theme: 'outline', size: 'large', width: 330, text: 'continue_with', shape: 'rectangular' }); } }; const existing = document.querySelector<HTMLScriptElement>('script[data-google-identity]'); if (existing) { if (window.google) render(); else existing.addEventListener('load', render); return () => { cancelled = true; existing.removeEventListener('load', render); }; } const script = document.createElement('script'); script.src = 'https://accounts.google.com/gsi/client'; script.async = true; script.dataset.googleIdentity = 'true'; script.addEventListener('load', render); script.addEventListener('error', () => setError('Google sign-in is unavailable right now. Please use email and password.')); document.head.appendChild(script); return () => { cancelled = true; script.removeEventListener('load', render); }; }, [googleClientId, googleReady, isOnboarding]);
   const submit = async (event: FormEvent) => { event.preventDefault(); setError(''); setNotice(''); if (isRegister && password !== confirmPassword) { setError('Passwords do not match.'); return; } if (isOnboarding) { if (!googleCredential) { setMode('login'); setError('Please start Google sign-in again.'); return; } await completeGoogle(googleCredential, true); return; } setBusy(true); try { const response = await fetch(centralApiUrl + (isRegister ? '/api/auth/register' : '/api/auth/login'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(isRegister ? { hospitalName, email, password } : { email, password }) }); const data = await response.json(); if (!response.ok) throw new Error(data.message ?? 'Authentication failed.'); if (isRegister) { setMode('login'); setNotice('Hospital account created. Sign in to continue.'); } else onSuccess(data.token, data.role); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Authentication failed.'); } finally { setBusy(false); } };
