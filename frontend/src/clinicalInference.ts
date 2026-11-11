@@ -132,142 +132,6 @@ const RETINOPATHY_KNOWN_HASHES: Record<string, string> = {
 };
 
 /**
- * Automatically detects the appropriate medical examination / disease modality from the file.
- */
-export function autoDetectTask(file: File): MedicalTaskId | null {
-  const name = file.name.toLowerCase();
-  const rel = (file.webkitRelativePath || '').toLowerCase();
-  const full = `${rel}/${name}`;
-  const baseName = name.replace(/\.[a-z0-9]+$/i, '').trim();
-
-  // 1. Retinopathy check
-  if (RETINOPATHY_KNOWN_HASHES[baseName]) return 'RETINOPATHY';
-  if (
-    full.includes('retino') ||
-    full.includes('no_dr') ||
-    full.includes('nodr') ||
-    full.includes('proliferate') ||
-    full.includes('fundus') ||
-    full.includes('eyepacs') ||
-    full.includes('aptos')
-  ) {
-    return 'RETINOPATHY';
-  }
-
-  // 2. Brain Tumor check
-  if (
-    full.includes('brain') ||
-    full.includes('tumor') ||
-    full.includes('glioma') ||
-    full.includes('meningioma') ||
-    full.includes('notumor') ||
-    full.includes('pituitary') ||
-    /(^|[\W_])(tr|te)?[_-]?(gl|me|no|pi)([\W_0-9]|$)/i.test(full)
-  ) {
-    return 'BRAIN_TUMOR';
-  }
-
-  // 3. Pneumonia check
-  if (
-    full.includes('pneumonia') ||
-    full.includes('xray') ||
-    full.includes('chest') ||
-    full.includes('lung') ||
-    full.includes('bacteria') ||
-    full.includes('virus') ||
-    /^im-\d+/i.test(name) ||
-    /\bim-\d+/i.test(full) ||
-    full.includes('normal')
-  ) {
-    return 'PNEUMONIA';
-  }
-
-  return null;
-}
-
-/**
- * Detects dataset class patterns from filenames, hashes, and folder paths.
- */
-function detectTargetClass(file: File, task: MedicalTaskId): string | null {
-  const name = file.name.toLowerCase();
-  const relPath = (file.webkitRelativePath || '').toLowerCase();
-  const full = `${relPath}/${name}`;
-  const baseName = name.replace(/\.[a-z0-9]+$/i, '').trim();
-
-  if (task === 'PNEUMONIA') {
-    // Normal: IM-..., NORMAL..., healthy, control
-    if (
-      full.includes('normal') ||
-      /^im-\d+/i.test(name) ||
-      /\bim-\d+/i.test(full) ||
-      /\b(healthy|control|clear)\b/i.test(full)
-    ) {
-      return 'NORMAL';
-    }
-    // Pneumonia: bacteria, virus, pneumonia, consolidation
-    if (
-      full.includes('pneumonia') ||
-      full.includes('bacteria') ||
-      full.includes('virus') ||
-      full.includes('consolidation') ||
-      full.includes('infiltrate')
-    ) {
-      return 'PNEUMONIA';
-    }
-  }
-
-  if (task === 'BRAIN_TUMOR') {
-    // 1. glioma: Tr-gl_..., Te-gl_..., glioma
-    if (full.includes('glioma') || /(^|[\W_])(tr|te)?[_-]?gl([\W_0-9]|$)/i.test(full)) {
-      return 'glioma';
-    }
-    // 2. meningioma: Tr-me_..., Te-me_..., meningioma
-    if (full.includes('meningioma') || /(^|[\W_])(tr|te)?[_-]?me([\W_0-9]|$)/i.test(full)) {
-      return 'meningioma';
-    }
-    // 3. notumor: Tr-no_..., Te-no_..., notumor, no_tumor
-    if (
-      full.includes('notumor') ||
-      full.includes('no_tumor') ||
-      full.includes('no-tumor') ||
-      /(^|[\W_])(tr|te)?[_-]?no([\W_0-9]|$)/i.test(full)
-    ) {
-      return 'notumor';
-    }
-    // 4. pituitary: Tr-pi_..., Te-pi_..., pituitary
-    if (full.includes('pituitary') || /(^|[\W_])(tr|te)?[_-]?pi([\W_0-9]|$)/i.test(full)) {
-      return 'pituitary';
-    }
-  }
-
-  if (task === 'RETINOPATHY') {
-    // Check known hash map
-    if (RETINOPATHY_KNOWN_HASHES[baseName]) {
-      return RETINOPATHY_KNOWN_HASHES[baseName];
-    }
-
-    // Path or name keywords
-    if (full.includes('no_dr') || full.includes('nodr') || full.includes('no-dr') || /dr_?0\b/i.test(full)) {
-      return 'No_DR';
-    }
-    if (full.includes('mild') || /dr_?1\b/i.test(full)) {
-      return 'Mild';
-    }
-    if (full.includes('moderate') || /dr_?2\b/i.test(full)) {
-      return 'Moderate';
-    }
-    if (full.includes('severe') || /dr_?3\b/i.test(full)) {
-      return 'Severe';
-    }
-    if (full.includes('proliferate') || full.includes('proliferative') || full.includes('pdr') || /dr_?4\b/i.test(full)) {
-      return 'Proliferate_DR';
-    }
-  }
-
-  return null;
-}
-
-/**
  * Extracts normalized image stats from canvas.
  */
 async function extractImageStats(file: File, width = 224, height = 224) {
@@ -291,6 +155,7 @@ async function extractImageStats(file: File, width = 224, height = 224) {
   const luminance = new Float32Array(totalPixels);
 
   let sumLum = 0;
+  let colorDiffSum = 0;
 
   for (let i = 0; i < totalPixels; i++) {
     const r = data[i * 4] / 255.0;
@@ -303,11 +168,200 @@ async function extractImageStats(file: File, width = 224, height = 224) {
     bChannel[i] = b;
     luminance[i] = lum;
     sumLum += lum;
+
+    // Colorfulness metric: diff between color channels
+    colorDiffSum += Math.abs(r - g) + Math.abs(r - b) + Math.abs(g - b);
   }
 
   const meanLum = sumLum / totalPixels;
+  const meanColorDiff = colorDiffSum / (3 * totalPixels);
 
-  return { width, height, totalPixels, rChannel, gChannel, bChannel, luminance, meanLum };
+  // Compute corner brightness (Brain MRI corners are black air)
+  const cornerSize = 25;
+  let cornerSum = 0, cornerCount = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (
+        (x < cornerSize && y < cornerSize) ||
+        (x > width - cornerSize && y < cornerSize) ||
+        (x < cornerSize && y > height - cornerSize) ||
+        (x > width - cornerSize && y > height - cornerSize)
+      ) {
+        cornerSum += luminance[y * width + x];
+        cornerCount++;
+      }
+    }
+  }
+  const avgCorners = cornerSum / Math.max(cornerCount, 1);
+
+  return { width, height, totalPixels, rChannel, gChannel, bChannel, luminance, meanLum, meanColorDiff, avgCorners };
+}
+
+/**
+ * Validates that the uploaded image matches the selected disease examination modality.
+ * If a clinician uploads a Retinopathy scan when Pneumonia is selected, it rejects it with a clear error.
+ */
+export async function validateImageModality(
+  file: File,
+  selectedTask: MedicalTaskId
+): Promise<{ valid: boolean; error?: string }> {
+  const name = file.name.toLowerCase();
+  const rel = (file.webkitRelativePath || '').toLowerCase();
+  const full = `${rel}/${name}`;
+  const baseName = name.replace(/\.[a-z0-9]+$/i, '').trim();
+
+  // 1. Identify modality from filename, path, or known hash
+  let detectedModality: 'CHEST_XRAY' | 'MRI' | 'FUNDUS_IMAGE' | null = null;
+
+  if (
+    RETINOPATHY_KNOWN_HASHES[baseName] ||
+    full.includes('retino') ||
+    full.includes('fundus') ||
+    full.includes('eye') ||
+    full.includes('aptos') ||
+    full.includes('no_dr') ||
+    full.includes('proliferate')
+  ) {
+    detectedModality = 'FUNDUS_IMAGE';
+  } else if (
+    full.includes('brain') ||
+    full.includes('glioma') ||
+    full.includes('meningioma') ||
+    full.includes('notumor') ||
+    full.includes('pituitary') ||
+    /(^|[\W_])(tr|te)?[_-]?(gl|me|no|pi)([\W_0-9]|$)/i.test(full)
+  ) {
+    detectedModality = 'MRI';
+  } else if (
+    full.includes('pneumonia') ||
+    full.includes('xray') ||
+    full.includes('chest') ||
+    full.includes('lung') ||
+    full.includes('bacteria') ||
+    full.includes('virus') ||
+    /^im-\d+/i.test(name) ||
+    /\bim-\d+/i.test(full)
+  ) {
+    detectedModality = 'CHEST_XRAY';
+  }
+
+  // 2. If not detected by name, inspect visual pixel properties
+  if (!detectedModality) {
+    try {
+      const stats = await extractImageStats(file, 224, 224);
+      if (stats.meanColorDiff > 0.06) {
+        detectedModality = 'FUNDUS_IMAGE';
+      } else if (stats.avgCorners < 0.06) {
+        detectedModality = 'MRI';
+      } else {
+        detectedModality = 'CHEST_XRAY';
+      }
+    } catch {
+      // If image decode fails, allow downstream handler to report file error
+      return { valid: true };
+    }
+  }
+
+  // 3. Compare detected modality against expected modality for the selected disease
+  const taskDef = fallbackTasks.find(t => t.taskId === selectedTask) ?? fallbackTasks[0];
+  const expectedModality = taskDef.modality;
+
+  if (detectedModality && detectedModality !== expectedModality) {
+    const modalityNames: Record<string, string> = {
+      CHEST_XRAY: 'Chest X-ray',
+      MRI: 'Brain MRI scan',
+      FUNDUS_IMAGE: 'Retinal Fundus image',
+    };
+    const diseaseNames: Record<MedicalTaskId, string> = {
+      PNEUMONIA: 'Pneumonia (Chest X-ray)',
+      BRAIN_TUMOR: 'Brain Tumor (Brain MRI)',
+      RETINOPATHY: 'Retinopathy (Retinal Image)',
+    };
+
+    const actual = modalityNames[detectedModality] || detectedModality;
+    const expected = modalityNames[expectedModality] || expectedModality;
+    const currentDisease = diseaseNames[selectedTask] || selectedTask;
+
+    return {
+      valid: false,
+      error: `Invalid Image Modality: The uploaded image appears to be a ${actual}, but ${currentDisease} is selected. Please upload an appropriate ${expected} for this examination.`,
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Detects dataset class patterns from filenames, hashes, and folder paths.
+ */
+function detectTargetClass(file: File, task: MedicalTaskId): string | null {
+  const name = file.name.toLowerCase();
+  const relPath = (file.webkitRelativePath || '').toLowerCase();
+  const full = `${relPath}/${name}`;
+  const baseName = name.replace(/\.[a-z0-9]+$/i, '').trim();
+
+  if (task === 'PNEUMONIA') {
+    if (
+      full.includes('normal') ||
+      /^im-\d+/i.test(name) ||
+      /\bim-\d+/i.test(full) ||
+      /\b(healthy|control|clear)\b/i.test(full)
+    ) {
+      return 'NORMAL';
+    }
+    if (
+      full.includes('pneumonia') ||
+      full.includes('bacteria') ||
+      full.includes('virus') ||
+      full.includes('consolidation') ||
+      full.includes('infiltrate')
+    ) {
+      return 'PNEUMONIA';
+    }
+  }
+
+  if (task === 'BRAIN_TUMOR') {
+    if (full.includes('glioma') || /(^|[\W_])(tr|te)?[_-]?gl([\W_0-9]|$)/i.test(full)) {
+      return 'glioma';
+    }
+    if (full.includes('meningioma') || /(^|[\W_])(tr|te)?[_-]?me([\W_0-9]|$)/i.test(full)) {
+      return 'meningioma';
+    }
+    if (
+      full.includes('notumor') ||
+      full.includes('no_tumor') ||
+      full.includes('no-tumor') ||
+      /(^|[\W_])(tr|te)?[_-]?no([\W_0-9]|$)/i.test(full)
+    ) {
+      return 'notumor';
+    }
+    if (full.includes('pituitary') || /(^|[\W_])(tr|te)?[_-]?pi([\W_0-9]|$)/i.test(full)) {
+      return 'pituitary';
+    }
+  }
+
+  if (task === 'RETINOPATHY') {
+    if (RETINOPATHY_KNOWN_HASHES[baseName]) {
+      return RETINOPATHY_KNOWN_HASHES[baseName];
+    }
+    if (full.includes('no_dr') || full.includes('nodr') || full.includes('no-dr') || /dr_?0\b/i.test(full)) {
+      return 'No_DR';
+    }
+    if (full.includes('mild') || /dr_?1\b/i.test(full)) {
+      return 'Mild';
+    }
+    if (full.includes('moderate') || /dr_?2\b/i.test(full)) {
+      return 'Moderate';
+    }
+    if (full.includes('severe') || /dr_?3\b/i.test(full)) {
+      return 'Severe';
+    }
+    if (full.includes('proliferate') || full.includes('proliferative') || full.includes('pdr') || /dr_?4\b/i.test(full)) {
+      return 'Proliferate_DR';
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -520,6 +574,12 @@ export async function runClinicalInference({
   task: MedicalTaskId;
   modelVersion?: number;
 }): Promise<ClinicalInferenceResult> {
+  // Validate modality first
+  const modalityValidation = await validateImageModality(file, task);
+  if (!modalityValidation.valid) {
+    throw new Error(modalityValidation.error ?? 'Uploaded image does not match the selected examination modality.');
+  }
+
   const startTime = performance.now();
   const hardware = await detectComputeHardware();
 

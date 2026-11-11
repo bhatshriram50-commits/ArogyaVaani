@@ -1,4 +1,6 @@
 {
+  "buildCommand": "tsc -b && vite build",
+  "outputDirectory": "dist",
   "rewrites": [
     {
       "source": "/(.*)",
@@ -6,4 +8,3 @@
     }
   ]
 }
-

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, CheckCircle2, Cpu, FileImage, Info, RefreshCw, ScanSearch, ShieldCheck, UploadCloud, X } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Cpu, FileImage, Info, RefreshCw, ScanSearch, ShieldCheck, UploadCloud, X, AlertTriangle } from 'lucide-react';
 import { examinationLabel, fallbackTasks, type MedicalTaskId } from './medicalTasks';
-import { runClinicalInference, recordPredictionMetadata, autoDetectTask, type ClinicalInferenceResult } from './clinicalInference';
+import { runClinicalInference, recordPredictionMetadata, validateImageModality, type ClinicalInferenceResult } from './clinicalInference';
 import { detectComputeHardware } from './webgpuTrainer';
 
 export function Prediction() {
@@ -31,17 +31,28 @@ export function Prediction() {
     return () => URL.revokeObjectURL(url);
   }, [file]);
 
-  const onFileChange = (newFile: File | null) => {
+  const onFileChange = async (newFile: File | null) => {
     setFile(newFile);
     setResult(null);
     setError('');
     setMetadataSynced(null);
 
-    // Automatically detect task if file matches another medical modality
     if (newFile) {
-      const detectedTask = autoDetectTask(newFile);
-      if (detectedTask && detectedTask !== task) {
-        setTask(detectedTask);
+      const check = await validateImageModality(newFile, task);
+      if (!check.valid && check.error) {
+        setError(check.error);
+      }
+    }
+  };
+
+  const onTaskChange = async (newTask: MedicalTaskId) => {
+    setTask(newTask);
+    setResult(null);
+    setError('');
+    if (file) {
+      const check = await validateImageModality(file, newTask);
+      if (!check.valid && check.error) {
+        setError(check.error);
       }
     }
   };
@@ -53,17 +64,16 @@ export function Prediction() {
     setMetadataSynced(null);
 
     try {
-      // Ensure the task matches the file if file strongly indicates a specific disease
-      const detectedTask = autoDetectTask(file);
-      const effectiveTask = detectedTask || task;
-      if (effectiveTask !== task) {
-        setTask(effectiveTask);
+      // Strictly enforce examination modality
+      const check = await validateImageModality(file, task);
+      if (!check.valid) {
+        throw new Error(check.error ?? 'The uploaded image does not match the selected examination modality.');
       }
 
       // Run in-browser client-side WebGPU inference
       const predictionResult = await runClinicalInference({
         file,
-        task: effectiveTask,
+        task,
         modelVersion: 3,
       });
 
@@ -72,7 +82,7 @@ export function Prediction() {
       // Record non-image metadata to central coordinator
       try {
         await recordPredictionMetadata({
-          task: effectiveTask,
+          task,
           modelVersion: typeof predictionResult.model_version === 'number' ? predictionResult.model_version : 3,
           predictedClass: predictionResult.prediction,
           confidence: predictionResult.confidence,
@@ -121,11 +131,7 @@ export function Prediction() {
             Examination / Disease Modality
             <select
               value={task}
-              onChange={event => {
-                setTask(event.target.value as MedicalTaskId);
-                setResult(null);
-                setError('');
-              }}
+              onChange={event => void onTaskChange(event.target.value as MedicalTaskId)}
             >
               {fallbackTasks.map(item => (
                 <option key={item.taskId} value={item.taskId}>
@@ -144,7 +150,7 @@ export function Prediction() {
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/bmp,image/webp,image/tiff"
-                onChange={event => onFileChange(event.target.files?.[0] ?? null)}
+                onChange={event => void onFileChange(event.target.files?.[0] ?? null)}
               />
               <UploadCloud size={36} />
               <b>Choose a medical image or drag & drop</b>
@@ -160,7 +166,7 @@ export function Prediction() {
                   type="button"
                   className="button secondary"
                   style={{ width: 'fit-content', padding: '4px 10px', fontSize: '12px', marginTop: '6px' }}
-                  onClick={() => onFileChange(null)}
+                  onClick={() => void onFileChange(null)}
                 >
                   <X size={14} /> Remove / Replace Image
                 </button>
@@ -168,7 +174,12 @@ export function Prediction() {
             </div>
           )}
 
-          {error && <div className="form-error">{error}</div>}
+          {error && (
+            <div className="form-error" style={{ fontSize: '13.5px', lineHeight: '1.5', marginTop: '12px', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+              <AlertTriangle size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+              <div>{error}</div>
+            </div>
+          )}
 
           <button
             className="button primary full"
