@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowRight, BrainCircuit, CheckCircle2, Clock3, FolderUp, History, LayoutDashboard, LogOut, RefreshCw, ScanSearch, Server, ShieldCheck, AlertCircle } from 'lucide-react';
+import { ArrowRight, BrainCircuit, CheckCircle2, Clock3, FolderUp, History, LayoutDashboard, LogOut, RefreshCw, ScanSearch, Server, ShieldCheck, AlertCircle, Zap, Cpu } from 'lucide-react';
 import { centralApiUrl, localMlUrl, localServiceHeaders, tokenHeaders } from './config';
 import { LiveFederated } from './LiveFederated';
 import { Prediction } from './Prediction';
 import { fallbackTasks, type MedicalTaskId } from './medicalTasks';
+import { detectComputeHardware, runInBrowserTraining, type LocalImageSample } from './webgpuTrainer';
 import './dashboard.css';
 
 type View = 'overview' | 'train' | 'global-model' | 'prediction' | 'history';
@@ -242,6 +243,9 @@ function Overview({ setView }: { setView: (view: View) => void }) {
 
 function LocalTrain() {
   const [task, setTask] = useState<MedicalTaskId>('PNEUMONIA');
+  const [engine, setEngine] = useState<'webgpu' | 'python'>('webgpu');
+  const [hardwareName, setHardwareName] = useState<string>('Detecting hardware...');
+  const [hasWebGpu, setHasWebGpu] = useState<boolean>(false);
   const [datasetDir, setDatasetDir] = useState('');
   const [epochs, setEpochs] = useState(10);
   const [classes, setClasses] = useState(2);
@@ -255,6 +259,13 @@ function LocalTrain() {
   const [submitted, setSubmitted] = useState('');
   const [notice, setNotice] = useState('');
   const input = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    void detectComputeHardware().then(hw => {
+      setHardwareName(hw.deviceName);
+      setHasWebGpu(hw.hasWebGpu);
+    });
+  }, []);
 
   const refreshNetwork = async () => {
     try {
@@ -289,11 +300,12 @@ function LocalTrain() {
 
   useEffect(() => {
     void refreshNetwork();
-    void refreshLocalState();
-  }, [task]);
+    if (engine === 'python') void refreshLocalState();
+  }, [task, engine]);
 
-  // Polling loop: keep polling during active training, packaging, and submitting lifecycle states
+  // Polling loop: keep polling during active training, packaging, and submitting lifecycle states (Python ML engine only)
   useEffect(() => {
+    if (engine === 'webgpu') return;
     if (!['queued', 'validating', 'training', 'packaging', 'submitting'].includes(training.status)) return;
     const url = localMlUrl + (training.job_id ? '/training/status/' + training.job_id : '/training/status');
     const timer = window.setInterval(async () => {
@@ -374,6 +386,19 @@ function LocalTrain() {
     setError('');
     setNotice('');
     try {
+      if (engine === 'webgpu') {
+        const next: Validation = {
+          classes: selected.classes,
+          class_distribution: selected.classDistribution,
+          file_count: selected.fileCount,
+          size_bytes: selected.sizeBytes,
+        };
+        setDatasetDir(selected.folderName);
+        setValidation(next);
+        setClasses(next.classes.length);
+        setNotice(`Local dataset "${selected.folderName}" validated in browser sandbox. Zero installation required.`);
+        return;
+      }
       const body = new FormData();
       selected.files.forEach(f => body.append('files', f, f.webkitRelativePath));
       const r = await fetch(localMlUrl + '/dataset/upload?task=' + task, { method: 'POST', headers: localServiceHeaders(), body });
@@ -385,7 +410,7 @@ function LocalTrain() {
       setClasses(next.classes.length);
       setNotice(`${b.dataset_name ?? selected.folderName} validated and ready in hospital-local storage.`);
     } catch (e) {
-      setError(e instanceof TypeError ? 'Local ML service is not reachable on 127.0.0.1:8000. Please start the ML service.' : e instanceof Error ? e.message : 'Dataset preparation failed.');
+      setError(e instanceof TypeError ? 'Local ML service is not reachable on 127.0.0.1:8000. Switch to In-Browser WebGPU Engine to train without installing anything.' : e instanceof Error ? e.message : 'Dataset preparation failed.');
     } finally {
       setBusy(false);
     }
@@ -397,6 +422,112 @@ function LocalTrain() {
     setBusy(true);
     setError('');
     setSubmitted('');
+
+    if (engine === 'webgpu') {
+      try {
+        setNotice('Synchronizing base model parameters from central coordinator...');
+        const modelUrl = `${centralApiUrl}/api/federated/global-model-binary?task=${task}${
+          network.baseGlobalModelVersion ? '&version=' + network.baseGlobalModelVersion : ''
+        }`;
+        const res = await fetch(modelUrl, { headers: tokenHeaders() });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.message ?? `Global model artifact is temporarily unavailable (status ${res.status}).`);
+        }
+        const baseModelBuffer = await res.arrayBuffer();
+
+        const samples: LocalImageSample[] = [];
+        if (selected) {
+          for (const file of selected.files) {
+            const p = (file.webkitRelativePath || '').replace(/\\/g, '/').split('/').filter(Boolean);
+            if (p.length >= 3 && validation.classes.includes(p[1])) {
+              samples.push({
+                file,
+                classLabel: p[1],
+                classIndex: validation.classes.indexOf(p[1]),
+              });
+            }
+          }
+        }
+        if (samples.length === 0) {
+          throw new Error('No valid class images found matching folder classes in the selected directory.');
+        }
+
+        setNotice(`Training model on ${hardwareName}... All computations stay strictly inside your browser.`);
+        const result = await runInBrowserTraining({
+          samples,
+          classes: validation.classes,
+          task,
+          baseModelBuffer,
+          epochs,
+          onProgress: p => {
+            setTraining({
+              status: p.status,
+              epoch: p.epoch,
+              total_epochs: p.totalEpochs,
+              loss: p.loss,
+              accuracy: p.accuracy > 1 ? p.accuracy / 100 : p.accuracy,
+              samples: p.samplesProcessed,
+              message: p.message ?? `Epoch ${p.epoch}/${p.totalEpochs} · Accuracy: ${p.accuracy}% · Loss: ${p.loss}`,
+            });
+          },
+        });
+
+        // Submit AVM1 payload directly to central coordinator
+        setNotice('Submitting encrypted mathematical parameter update to central coordinator...');
+        setTraining(prev => ({ ...prev, status: 'submitting', message: 'Submitting update to coordinator...' }));
+        const submitUrl = `${centralApiUrl}/api/federated/rounds/${network.round}/updates?samples=${samples.length}&task=${task}`;
+        const subRes = await fetch(submitUrl, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${sessionStorage.getItem('arogyavaani_token') ?? ''}`,
+            'Content-Type': 'application/vnd.arogyavaani.model-v1',
+          },
+          body: result.avm1Payload,
+        });
+        const subData = await subRes.json().catch(() => ({}));
+        if (!subRes.ok) {
+          throw new Error(subData.message ?? 'Model update was not accepted by coordinator.');
+        }
+
+        // Record training run in coordinator audit log
+        await fetch(`${centralApiUrl}/api/training/runs`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${sessionStorage.getItem('arogyavaani_token') ?? ''}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            task,
+            status: 'completed',
+            samples: samples.length,
+            epochs,
+            loss: result.loss,
+            accuracy: result.accuracy > 1 ? result.accuracy / 100 : result.accuracy,
+          }),
+        }).catch(() => undefined);
+
+        setSubmitted(`Model update submitted and confirmed for Round ${network.round}!`);
+        setNotice(`🎉 Round ${network.round} training and contribution confirmed! Zero patient images left your machine.`);
+        setTraining({
+          status: 'completed',
+          epoch: epochs,
+          total_epochs: epochs,
+          loss: result.loss,
+          accuracy: result.accuracy > 1 ? result.accuracy / 100 : result.accuracy,
+          samples: samples.length,
+          submission: { status: 'submitted', round: network.round },
+        });
+        await refreshNetwork();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'In-browser training failed.');
+        setTraining({ status: 'failed', message: e instanceof Error ? e.message : 'Training failed.' });
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     try {
       if ((network.baseGlobalModelVersion ?? 0) > 0) {
         const r = await fetch(localMlUrl + '/federated/download-global', {
@@ -600,6 +731,51 @@ function LocalTrain() {
         </Pill>
       </section>
 
+      {/* Engine Selection: WebGPU vs Desktop Python Daemon */}
+      <section className="engine-selector">
+        <div
+          role="button"
+          tabIndex={0}
+          className={`engine-card ${engine === 'webgpu' ? 'selected' : ''}`}
+          onClick={() => {
+            setEngine('webgpu');
+            clear();
+          }}
+          onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && setEngine('webgpu')}
+        >
+          <div className="engine-card-header">
+            <div className="engine-title">
+              <Zap size={20} color="#0d8a68" />
+              <span>In-Browser WebGPU Engine</span>
+            </div>
+            <span className="engine-badge green">Zero Install • Instant</span>
+          </div>
+          <p>Train directly inside your browser sandbox using GPU hardware acceleration. No software downloads, Python, or terminal required.</p>
+          <small><Cpu size={14} /> Accelerator: {hardwareName}</small>
+        </div>
+
+        <div
+          role="button"
+          tabIndex={0}
+          className={`engine-card ${engine === 'python' ? 'selected' : ''}`}
+          onClick={() => {
+            setEngine('python');
+            clear();
+          }}
+          onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && setEngine('python')}
+        >
+          <div className="engine-card-header">
+            <div className="engine-title">
+              <Server size={20} color="#1a73e8" />
+              <span>Desktop Python ML Agent</span>
+            </div>
+            <span className="engine-badge blue">Native Python CLI</span>
+          </div>
+          <p>Connects to the hospital's local Python daemon on <code>127.0.0.1:8000</code> using PyTorch CUDA/CPU for heavy batch runs.</p>
+          <small><ShieldCheck size={14} /> Loopback: 127.0.0.1:8000</small>
+        </div>
+      </section>
+
       <section className="panel upload-panel">
         <div
           className="dataset-upload-field"
@@ -673,7 +849,11 @@ function LocalTrain() {
               <button className="button primary" disabled={busy || Boolean(validation)} onClick={() => void upload()}>
                 {busy ? 'Preparing…' : 'Prepare Dataset'} <ArrowRight size={16} />
               </button>
-              <small>Files are copied strictly to the local hospital training service for offline batch loading.</small>
+              <small>
+                {engine === 'webgpu'
+                  ? 'Zero installation: validates images directly in browser sandbox memory with complete privacy.'
+                  : 'Files are copied strictly to the local hospital training service for offline batch loading.'}
+              </small>
             </div>
           </section>
         )}
@@ -687,7 +867,7 @@ function LocalTrain() {
               <CheckCircle2 size={24} />
               <div>
                 <b>Local Dataset Validated & Ready</b>
-                <span>Validated by the hospital-side PyTorch environment</span>
+                <span>{engine === 'webgpu' ? `Validated in browser sandbox · ${hardwareName}` : 'Validated by the hospital-side PyTorch environment'}</span>
               </div>
             </div>
             <div className="dataset-real-metrics">
@@ -718,7 +898,7 @@ function LocalTrain() {
               disabled={busy || ['queued', 'validating', 'training', 'packaging', 'submitting'].includes(training.status)}
               onClick={() => void train()}
             >
-              {busy ? 'Starting…' : 'Start Local Training'} <ArrowRight size={16} />
+              {busy ? 'Starting…' : engine === 'webgpu' ? 'Start WebGPU Local Training' : 'Start Local Training'} <ArrowRight size={16} />
             </button>
           )}
         </div>

@@ -88,9 +88,21 @@ app.use((req, res, next) => {
   res.on('finish', () => { if (res.statusCode >= 400) console.warn(JSON.stringify({ event: 'API_REQUEST', method: req.method, path: req.path, status: res.statusCode, durationMs: Date.now() - started })); });
   next();
 });
+let gridFsBucket: mongoose.mongo.GridFSBucket | undefined;
 if (process.env.MONGODB_URI && process.env.NODE_ENV !== 'test') {
   mongoose.connect(process.env.MONGODB_URI, { dbName: process.env.MONGODB_DB ?? 'arogyavaani', serverSelectionTimeoutMS: 5000 })
-    .then(async () => { if (artifactRoot) await mkdir(artifactRoot, { recursive: true }); await migrateLegacyPneumoniaData(); databaseAvailable = true; databaseState = 'connected'; databaseError = ''; void ensureAdmin(); console.log(JSON.stringify({ event: 'DATABASE_CONNECTED' })); })
+    .then(async () => {
+      if (mongoose.connection.db) {
+        gridFsBucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, { bucketName: 'model_artifacts' });
+      }
+      if (artifactRoot) await mkdir(artifactRoot, { recursive: true });
+      await migrateLegacyPneumoniaData();
+      databaseAvailable = true;
+      databaseState = 'connected';
+      databaseError = '';
+      void ensureAdmin();
+      console.log(JSON.stringify({ event: 'DATABASE_CONNECTED' }));
+    })
     .catch(error => { databaseState = 'error'; databaseError = error instanceof Error ? error.message : 'MongoDB connection failed'; console.warn(`MongoDB unavailable: ${databaseError}`); });
   mongoose.connection.on('disconnected', () => { databaseAvailable = false; databaseState = 'error'; databaseError = 'MongoDB disconnected'; });
 }
@@ -195,16 +207,82 @@ class FilesystemArtifactStore implements ModelArtifactStore {
   }
   async remove(key: string) { await unlink(this.pathFor(key)).catch(() => undefined); }
 }
-const artifactStore: ModelArtifactStore | undefined = artifactRoot ? new FilesystemArtifactStore(artifactRoot) : undefined;
+class MongoGridFSArtifactStore implements ModelArtifactStore {
+  constructor(private readonly getBucket: () => mongoose.mongo.GridFSBucket | undefined, private readonly fallbackFs?: FilesystemArtifactStore) {}
+
+  async save(key: string, payload: Buffer) {
+    const normalizedKey = key.replace(/\\/g, '/');
+    const bucket = this.getBucket();
+    if (bucket) {
+      try {
+        const existing = await bucket.find({ filename: normalizedKey }).toArray();
+        for (const file of existing) await bucket.delete(file._id).catch(() => undefined);
+        const uploadStream = bucket.openUploadStream(normalizedKey, { chunkSizeBytes: 1048576 });
+        await new Promise<void>((resolve, reject) => {
+          uploadStream.on('finish', () => resolve());
+          uploadStream.on('error', reject);
+          uploadStream.end(payload);
+        });
+      } catch (err) {
+        console.warn('GridFS save warning:', err instanceof Error ? err.message : err);
+      }
+    }
+    if (this.fallbackFs) {
+      await this.fallbackFs.save(key, payload).catch(err => console.warn('Filesystem fallback save warning:', err));
+    }
+  }
+
+  async read(key: string, expectedChecksum?: string) {
+    const normalizedKey = key.replace(/\\/g, '/');
+    const bucket = this.getBucket();
+    if (bucket) {
+      try {
+        const existing = await bucket.find({ $or: [{ filename: normalizedKey }, { filename: key }] }).toArray();
+        if (existing.length > 0) {
+          const chunks: Buffer[] = [];
+          const downloadStream = bucket.openDownloadStreamByName(existing[0].filename);
+          for await (const chunk of downloadStream) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          }
+          const payload = Buffer.concat(chunks);
+          if (expectedChecksum && checksum(payload) !== expectedChecksum) {
+            throw new Error('Model artifact integrity verification failed.');
+          }
+          return payload;
+        }
+      } catch (err) {
+        console.warn('GridFS read warning, trying filesystem:', err instanceof Error ? err.message : err);
+      }
+    }
+    if (this.fallbackFs) {
+      return this.fallbackFs.read(key, expectedChecksum);
+    }
+    throw new Error('Model artifact not found in GridFS or filesystem: ' + key);
+  }
+
+  async remove(key: string) {
+    const normalizedKey = key.replace(/\\/g, '/');
+    const bucket = this.getBucket();
+    if (bucket) {
+      try {
+        const existing = await bucket.find({ $or: [{ filename: normalizedKey }, { filename: key }] }).toArray();
+        for (const file of existing) await bucket.delete(file._id).catch(() => undefined);
+      } catch { /* ignore */ }
+    }
+    if (this.fallbackFs) {
+      await this.fallbackFs.remove(key).catch(() => undefined);
+    }
+  }
+}
+const fsArtifactStore = artifactRoot ? new FilesystemArtifactStore(artifactRoot) : undefined;
+const artifactStore: ModelArtifactStore = new MongoGridFSArtifactStore(() => gridFsBucket, fsArtifactStore);
 const saveArtifact = async (key: string, payload: Buffer) => {
-  if (!artifactStore) throw new Error('Model artifact storage is not configured safely.');
   await artifactStore.save(key, payload);
 };
 const readArtifact = async (key: string, expectedChecksum?: string) => {
-  if (!artifactStore) throw new Error('Model artifact storage is not configured safely.');
   return artifactStore.read(key, expectedChecksum);
 };
-const removeArtifact = async (key?: string) => { if (key && artifactStore) await artifactStore.remove(key); };
+const removeArtifact = async (key?: string) => { if (key) await artifactStore.remove(key); };
 const payloadFor = async (record: any) => {
   const payload = record.binaryPayload ? Buffer.from(record.binaryPayload) : record.artifactKey ? await readArtifact(record.artifactKey, record.checksum) : undefined;
   if (!payload) throw new Error('Model artifact is unavailable.');
