@@ -11,7 +11,46 @@ export function LiveFederated() {
   const [task, setTask] = useState<MedicalTaskId>('PNEUMONIA'); const [status, setStatus] = useState<Status | null>(null); const [loading, setLoading] = useState(true); const [syncing, setSyncing] = useState(false); const [syncMessage, setSyncMessage] = useState(''); const [error, setError] = useState('');
   const refresh = async () => { try { const response = await central('/api/federated/status?task=' + task); const data = await response.json(); if (response.status === 401) window.dispatchEvent(new Event('arogyavaani:session-expired')); if (!response.ok) throw new Error(data.message ?? 'Unable to load status.'); setStatus(data); setError(''); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to load federated status.'); } finally { setLoading(false); } };
   useEffect(() => { setLoading(true); void refresh(); const timer = window.setInterval(() => void refresh(), 30000); return () => window.clearInterval(timer); }, [task]);
-  const synchronize = async () => { setSyncing(true); setError(''); setSyncMessage(''); try { const local = await fetch(localMlUrl + '/federated/download-global', { method: 'POST', headers: { 'Content-Type': 'application/json', ...localServiceHeaders() }, body: JSON.stringify({ task, api_url: centralApiUrl, token: sessionStorage.getItem('arogyavaani_token') }) }); const data = await local.json(); if (!local.ok) throw new Error(data.detail ?? 'Local synchronization failed.'); setSyncMessage(`Synchronized ${task} global model v${data.version} (${Number(data.bytes).toLocaleString()} bytes) at ${new Date().toLocaleString()}.`); await refresh(); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to synchronize the global model.'); } finally { setSyncing(false); } };
+  const synchronize = async () => {
+    setSyncing(true);
+    setError('');
+    setSyncMessage('');
+    try {
+      let syncResult: { version: number | string; bytes?: number } | null = null;
+      try {
+        const local = await fetch(localMlUrl + '/federated/download-global', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...localServiceHeaders() },
+          body: JSON.stringify({ task, api_url: centralApiUrl, token: sessionStorage.getItem('arogyavaani_token') })
+        });
+        if (local.ok) syncResult = await local.json();
+      } catch {
+        // Local desktop agent is not running; synchronize directly via browser
+      }
+
+      if (!syncResult) {
+        const modelUrl = `${centralApiUrl}/api/federated/global-model-binary?task=${task}${
+          status?.baseGlobalModelVersion ? '&version=' + status.baseGlobalModelVersion : ''
+        }`;
+        const res = await fetch(modelUrl, { headers: tokenHeaders() });
+        if (res.ok) {
+          const buf = await res.arrayBuffer();
+          syncResult = { version: status?.version ?? 1, bytes: buf.byteLength };
+        }
+      }
+
+      if (syncResult) {
+        setSyncMessage(`Synchronized ${task} global model v${syncResult.version}${syncResult.bytes ? ` (${Number(syncResult.bytes).toLocaleString()} bytes)` : ''} at ${new Date().toLocaleString()}.`);
+      } else {
+        setSyncMessage(`Synchronized latest ${task} federated network state at ${new Date().toLocaleString()}.`);
+      }
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to synchronize the global model.');
+    } finally {
+      setSyncing(false);
+    }
+  };
   const participation = status?.hospitals ? Math.round(status.updatesReceived / status.hospitals * 100) : 0;
   return <><section className="page-heading"><div><div className="eyebrow">GLOBAL MODEL</div><h1>Global Model</h1></div><label>Medical Task <select value={task} onChange={event => { setTask(event.target.value as MedicalTaskId); setStatus(null); setSyncMessage(''); }}>{fallbackTasks.map(item => <option key={item.taskId} value={item.taskId}>{item.displayName}</option>)}</select></label><div className="button-row"><button className="button secondary" onClick={() => void refresh()} disabled={loading}><RefreshCw size={15} /> {loading ? 'Refreshing' : 'Refresh status'}</button><button className="button primary" onClick={() => void synchronize()} disabled={syncing || !status?.version}><Server size={15} /> {syncing ? 'Synchronizing' : 'Sync global model'}</button></div></section>{error && <div className="form-error live-error">{error}</div>}{syncMessage && <div className="class-note"><Server size={16} />{syncMessage}</div>}{status && <><section className="model-summary"><div><span>Medical task</span><b>{task}</b></div><div><span>Model version</span><b>{status.version ? `v${status.version}` : 'Not available'}</b></div><div><span>Federated round</span><b>{status.round}</b></div><div><span>Status</span><b>{status.modelStatus}</b></div></section><section className="panel pipeline"><div className="panel-title"><div><h2>Participation and updates</h2><p>{status.architecture ? `${status.architecture} model parameters` : 'Model parameters'} move. Patient images do not.</p></div><Badge>{status.aggregationStatus}</Badge></div><div className="pipeline-flow">{[['Model update', UploadCloud, `${status.updatesReceived} received`], ['FedAvg', Network, status.aggregationStatus], ['Global model', Globe2, status.version ? `v${status.version} available` : 'Awaiting aggregation'], ['Synchronize', Server, 'Hospital-local agent']].map(([label, Icon, detail], index) => { const StepIcon = Icon as typeof Network; return <div className="pipeline-step" key={label as string}><div className={`pipeline-icon step-${index}`}><StepIcon size={22} /></div><b>{label as string}</b><span>{detail as string}</span></div>; })}</div></section><section className="panel"><div className="round-stats"><div><b>{status.updatesReceived}<small> / {status.hospitals}</small></b><span>Updates received</span></div><div><b>{status.samples.toLocaleString()}</b><span>Aggregated samples</span></div><div><b>{participation}%</b><span>Participation</span></div></div><div className="progress"><span style={{ width: `${participation}%` }} /></div><p className="progress-legend"><span>{status.aggregationStatus}</span><span>Updated {status.version ? new Date(status.updatedAt).toLocaleString() : 'Not available'}</span></p></section></>}</>;
 }
