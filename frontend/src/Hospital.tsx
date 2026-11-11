@@ -243,16 +243,13 @@ function Overview({ setView }: { setView: (view: View) => void }) {
 
 function LocalTrain() {
   const [task, setTask] = useState<MedicalTaskId>('PNEUMONIA');
-  const [engine, setEngine] = useState<'webgpu' | 'python'>('webgpu');
   const [hardwareName, setHardwareName] = useState<string>('Detecting hardware...');
-  const [hasWebGpu, setHasWebGpu] = useState<boolean>(false);
   const [datasetDir, setDatasetDir] = useState('');
   const [epochs, setEpochs] = useState(10);
   const [classes, setClasses] = useState(2);
   const [validation, setValidation] = useState<Validation | null>(null);
   const [training, setTraining] = useState<Training>({ status: 'idle' });
   const [network, setNetwork] = useState<Network | null>(null);
-  const [pending, setPending] = useState<PendingUpdate[]>([]);
   const [selected, setSelected] = useState<Dataset | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -263,7 +260,6 @@ function LocalTrain() {
   useEffect(() => {
     void detectComputeHardware().then(hw => {
       setHardwareName(hw.deviceName);
-      setHasWebGpu(hw.hasWebGpu);
     });
   }, []);
 
@@ -281,62 +277,9 @@ function LocalTrain() {
     }
   };
 
-  const refreshLocalState = async () => {
-    try {
-      const r = await fetch(localMlUrl + '/local-state?task=' + task, { headers: localServiceHeaders() });
-      if (!r.ok) throw new Error();
-      const state = (await r.json()) as LocalState;
-      setPending(state.pending_updates ?? []);
-      if (state.latest_training_job) {
-        setTraining(state.latest_training_job);
-        if (state.latest_training_job.submission?.status === 'submitted') {
-          setSubmitted(`Model update submitted and confirmed for Round ${state.latest_training_job.submission.round ?? ''}.`);
-        }
-      }
-    } catch {
-      /* Central dashboard remains usable if local service is starting */
-    }
-  };
-
   useEffect(() => {
     void refreshNetwork();
-    if (engine === 'python') void refreshLocalState();
-  }, [task, engine]);
-
-  // Polling loop: keep polling during active training, packaging, and submitting lifecycle states (Python ML engine only)
-  useEffect(() => {
-    if (engine === 'webgpu') return;
-    if (!['queued', 'validating', 'training', 'packaging', 'submitting'].includes(training.status)) return;
-    const url = localMlUrl + (training.job_id ? '/training/status/' + training.job_id : '/training/status');
-    const timer = window.setInterval(async () => {
-      try {
-        const r = await fetch(url, { headers: localServiceHeaders() });
-        if (!r.ok) return;
-        const next = (await r.json()) as Training;
-        setTraining(next);
-
-        if (next.status === 'completed') {
-          if (next.submission?.status === 'submitted') {
-            setSubmitted(`Model update submitted and confirmed for Round ${next.submission.round ?? network?.round ?? ''}.`);
-            await refreshNetwork();
-            await refreshLocalState();
-          } else if (next.submission?.status === 'pending_retry') {
-            setError(`Auto-submission failed: ${next.submission.message ?? 'Unknown error'}. Local update is safely retained; click Submit below to retry.`);
-            await refreshLocalState();
-          } else {
-            setNotice('Local training completed successfully. Mathematical parameters generated and ready for submission.');
-            await refreshLocalState();
-          }
-        } else if (next.status === 'failed') {
-          setError(next.message ?? 'Local training failed.');
-        }
-      } catch {
-        setError('Unable to read local training progress.');
-      }
-    }, 1500);
-
-    return () => window.clearInterval(timer);
-  }, [training.status, training.job_id, network?.round]);
+  }, [task]);
 
   useEffect(() => {
     if (network?.hasSubmitted && !submitted) {
@@ -386,31 +329,18 @@ function LocalTrain() {
     setError('');
     setNotice('');
     try {
-      if (engine === 'webgpu') {
-        const next: Validation = {
-          classes: selected.classes,
-          class_distribution: selected.classDistribution,
-          file_count: selected.fileCount,
-          size_bytes: selected.sizeBytes,
-        };
-        setDatasetDir(selected.folderName);
-        setValidation(next);
-        setClasses(next.classes.length);
-        setNotice(`Local dataset "${selected.folderName}" validated in browser sandbox. Zero installation required.`);
-        return;
-      }
-      const body = new FormData();
-      selected.files.forEach(f => body.append('files', f, f.webkitRelativePath));
-      const r = await fetch(localMlUrl + '/dataset/upload?task=' + task, { method: 'POST', headers: localServiceHeaders(), body });
-      const b = await r.json();
-      if (!r.ok) throw new Error(b.detail ?? 'Dataset preparation failed.');
-      const next = b.validation as Validation;
-      setDatasetDir(b.dataset_dir);
+      const next: Validation = {
+        classes: selected.classes,
+        class_distribution: selected.classDistribution,
+        file_count: selected.fileCount,
+        size_bytes: selected.sizeBytes,
+      };
+      setDatasetDir(selected.folderName);
       setValidation(next);
       setClasses(next.classes.length);
-      setNotice(`${b.dataset_name ?? selected.folderName} validated and ready in hospital-local storage.`);
+      setNotice(`Local dataset "${selected.folderName}" validated in browser sandbox. Zero installation required.`);
     } catch (e) {
-      setError(e instanceof TypeError ? 'Local ML service is not reachable on 127.0.0.1:8000. Switch to In-Browser WebGPU Engine to train without installing anything.' : e instanceof Error ? e.message : 'Dataset preparation failed.');
+      setError(e instanceof Error ? e.message : 'Dataset preparation failed.');
     } finally {
       setBusy(false);
     }
@@ -423,171 +353,105 @@ function LocalTrain() {
     setError('');
     setSubmitted('');
 
-    if (engine === 'webgpu') {
-      try {
-        setNotice('Synchronizing base model parameters from central coordinator...');
-        const modelUrl = `${centralApiUrl}/api/federated/global-model-binary?task=${task}${
-          network.baseGlobalModelVersion ? '&version=' + network.baseGlobalModelVersion : ''
-        }`;
-        const res = await fetch(modelUrl, { headers: tokenHeaders() });
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.message ?? `Global model artifact is temporarily unavailable (status ${res.status}).`);
-        }
-        const baseModelBuffer = await res.arrayBuffer();
+    try {
+      setNotice('Synchronizing base model parameters from central coordinator...');
+      const modelUrl = `${centralApiUrl}/api/federated/global-model-binary?task=${task}${
+        network.baseGlobalModelVersion ? '&version=' + network.baseGlobalModelVersion : ''
+      }`;
+      const res = await fetch(modelUrl, { headers: tokenHeaders() });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message ?? `Global model artifact is temporarily unavailable (status ${res.status}).`);
+      }
+      const baseModelBuffer = await res.arrayBuffer();
 
-        const samples: LocalImageSample[] = [];
-        if (selected) {
-          for (const file of selected.files) {
-            const p = (file.webkitRelativePath || '').replace(/\\/g, '/').split('/').filter(Boolean);
-            if (p.length >= 3 && validation.classes.includes(p[1])) {
-              samples.push({
-                file,
-                classLabel: p[1],
-                classIndex: validation.classes.indexOf(p[1]),
-              });
-            }
+      const samples: LocalImageSample[] = [];
+      if (selected) {
+        for (const file of selected.files) {
+          const p = (file.webkitRelativePath || '').replace(/\\/g, '/').split('/').filter(Boolean);
+          if (p.length >= 3 && validation.classes.includes(p[1])) {
+            samples.push({
+              file,
+              classLabel: p[1],
+              classIndex: validation.classes.indexOf(p[1]),
+            });
           }
         }
-        if (samples.length === 0) {
-          throw new Error('No valid class images found matching folder classes in the selected directory.');
-        }
-
-        setNotice(`Training model on ${hardwareName}... All computations stay strictly inside your browser.`);
-        const result = await runInBrowserTraining({
-          samples,
-          classes: validation.classes,
-          task,
-          baseModelBuffer,
-          epochs,
-          onProgress: p => {
-            setTraining({
-              status: p.status,
-              epoch: p.epoch,
-              total_epochs: p.totalEpochs,
-              loss: p.loss,
-              accuracy: p.accuracy > 1 ? p.accuracy / 100 : p.accuracy,
-              samples: p.samplesProcessed,
-              message: p.message ?? `Epoch ${p.epoch}/${p.totalEpochs} · Accuracy: ${p.accuracy}% · Loss: ${p.loss}`,
-            });
-          },
-        });
-
-        // Submit AVM1 payload directly to central coordinator
-        setNotice('Submitting encrypted mathematical parameter update to central coordinator...');
-        setTraining(prev => ({ ...prev, status: 'submitting', message: 'Submitting update to coordinator...' }));
-        const submitUrl = `${centralApiUrl}/api/federated/rounds/${network.round}/updates?samples=${samples.length}&task=${task}`;
-        const subRes = await fetch(submitUrl, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${sessionStorage.getItem('arogyavaani_token') ?? ''}`,
-            'Content-Type': 'application/vnd.arogyavaani.model-v1',
-          },
-          body: result.avm1Payload,
-        });
-        const subData = await subRes.json().catch(() => ({}));
-        if (!subRes.ok) {
-          throw new Error(subData.message ?? 'Model update was not accepted by coordinator.');
-        }
-
-        // Record training run in coordinator audit log
-        await fetch(`${centralApiUrl}/api/training/runs`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${sessionStorage.getItem('arogyavaani_token') ?? ''}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            task,
-            status: 'completed',
-            samples: samples.length,
-            epochs,
-            loss: result.loss,
-            accuracy: result.accuracy > 1 ? result.accuracy / 100 : result.accuracy,
-          }),
-        }).catch(() => undefined);
-
-        setSubmitted(`Model update submitted and confirmed for Round ${network.round}!`);
-        setNotice(`🎉 Round ${network.round} training and contribution confirmed! Zero patient images left your machine.`);
-        setTraining({
-          status: 'completed',
-          epoch: epochs,
-          total_epochs: epochs,
-          loss: result.loss,
-          accuracy: result.accuracy > 1 ? result.accuracy / 100 : result.accuracy,
-          samples: samples.length,
-          submission: { status: 'submitted', round: network.round },
-        });
-        await refreshNetwork();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'In-browser training failed.');
-        setTraining({ status: 'failed', message: e instanceof Error ? e.message : 'Training failed.' });
-      } finally {
-        setBusy(false);
       }
-      return;
-    }
+      if (samples.length === 0) {
+        throw new Error('No valid class images found matching folder classes in the selected directory.');
+      }
 
-    try {
-      if ((network.baseGlobalModelVersion ?? 0) > 0) {
-        const r = await fetch(localMlUrl + '/federated/download-global', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...localServiceHeaders() },
-          body: JSON.stringify({ task, api_url: centralApiUrl, token: sessionStorage.getItem('arogyavaani_token'), expected_version: network.baseGlobalModelVersion }),
-        });
-        const b = await r.json();
-        if (!r.ok) throw new Error(b.detail ?? 'Unable to synchronize the required global model.');
-      } else {
-        const bootstrap = await fetch(localMlUrl + '/federated/bootstrap', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...localServiceHeaders() },
-          body: JSON.stringify({ task, classes: validation.classes }),
-        });
-        if (!bootstrap.ok) {
-          const b = await bootstrap.json();
-          throw new Error(b.detail ?? 'Unable to prepare the shared version-zero model.');
-        }
-        const publish = await fetch(`${centralApiUrl}/api/federated/rounds/${network.round}/bootstrap?task=${task}`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${sessionStorage.getItem('arogyavaani_token') ?? ''}`,
-            'Content-Type': 'application/vnd.arogyavaani.model-v1',
-          },
-          body: await bootstrap.arrayBuffer(),
-        });
-        const b = await publish.json();
-        if (!publish.ok) throw new Error(b.message ?? 'Unable to publish the shared version-zero model.');
-        if (publish.status === 200) {
-          const r = await fetch(localMlUrl + '/federated/download-global', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...localServiceHeaders() },
-            body: JSON.stringify({ task, api_url: centralApiUrl, token: sessionStorage.getItem('arogyavaani_token'), expected_version: 0 }),
+      setNotice(`Training model on ${hardwareName}... All computations stay strictly inside your browser.`);
+      const result = await runInBrowserTraining({
+        samples,
+        classes: validation.classes,
+        task,
+        baseModelBuffer,
+        baseVersion: network.baseGlobalModelVersion ?? 0,
+        epochs,
+        onProgress: p => {
+          setTraining({
+            status: p.status,
+            epoch: p.epoch,
+            total_epochs: p.totalEpochs,
+            loss: p.loss,
+            accuracy: p.accuracy > 1 ? p.accuracy / 100 : p.accuracy,
+            samples: p.samplesProcessed,
+            message: p.message ?? `Epoch ${p.epoch}/${p.totalEpochs} · Accuracy: ${p.accuracy}% · Loss: ${p.loss}`,
           });
-          const download = await r.json();
-          if (!r.ok) throw new Error(download.detail ?? 'Unable to synchronize the shared version-zero model.');
-        }
-        setNotice(publish.status === 201 ? 'Shared version-zero base model published for all selected hospitals.' : 'Shared version-zero base model synchronized from coordinator.');
+        },
+      });
+
+      // Submit AVM1 payload directly to central coordinator
+      setNotice('Submitting encrypted mathematical parameter update to central coordinator...');
+      setTraining(prev => ({ ...prev, status: 'submitting', message: 'Submitting update to coordinator...' }));
+      const submitUrl = `${centralApiUrl}/api/federated/rounds/${network.round}/updates?samples=${samples.length}&task=${task}`;
+      const subRes = await fetch(submitUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${sessionStorage.getItem('arogyavaani_token') ?? ''}`,
+          'Content-Type': 'application/vnd.arogyavaani.model-v1',
+        },
+        body: result.avm1Payload,
+      });
+      const subData = await subRes.json().catch(() => ({}));
+      if (!subRes.ok) {
+        throw new Error(subData.message ?? 'Model update was not accepted by coordinator.');
       }
 
-      const r = await fetch(localMlUrl + '/train', {
+      // Record training run in coordinator audit log
+      await fetch(`${centralApiUrl}/api/training/runs`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...localServiceHeaders() },
+        headers: {
+          Authorization: `Bearer ${sessionStorage.getItem('arogyavaani_token') ?? ''}`,
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           task,
-          dataset_dir: datasetDir,
-          num_classes: classes,
+          status: 'completed',
+          samples: samples.length,
           epochs,
-          federation_round: network.round,
-          base_global_model_version: network.baseGlobalModelVersion ?? 0,
-          federation_api_url: centralApiUrl,
-          federation_token: sessionStorage.getItem('arogyavaani_token'),
+          loss: result.loss,
+          accuracy: result.accuracy > 1 ? result.accuracy / 100 : result.accuracy,
         }),
+      }).catch(() => undefined);
+
+      setSubmitted(`Model update submitted and confirmed for Round ${network.round}!`);
+      setNotice(`🎉 Round ${network.round} training and contribution confirmed! Zero patient images left your machine.`);
+      setTraining({
+        status: 'completed',
+        epoch: epochs,
+        total_epochs: epochs,
+        loss: result.loss,
+        accuracy: result.accuracy > 1 ? result.accuracy / 100 : result.accuracy,
+        samples: samples.length,
+        submission: { status: 'submitted', round: network.round },
       });
-      const b = await r.json();
-      if (!r.ok) throw new Error(b.detail ?? 'Local training failed.');
-      setTraining(b);
+      await refreshNetwork();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Local training failed.');
+      setError(e instanceof Error ? e.message : 'In-browser training failed.');
+      setTraining({ status: 'failed', message: e instanceof Error ? e.message : 'Training failed.' });
     } finally {
       setBusy(false);
     }
@@ -601,46 +465,8 @@ function LocalTrain() {
     setBusy(true);
     setError('');
     try {
-      const stateRes = await fetch(localMlUrl + '/local-state?task=' + task, { headers: localServiceHeaders() });
-      const stateData = stateRes.ok ? ((await stateRes.json()) as LocalState) : null;
-      const currentPending = stateData?.pending_updates ?? pending;
-      const pendingForRound = currentPending.find(item => item.round === network.round);
-
-      let r: Response;
-      if (pendingForRound) {
-        // Retry the stored pending AVM1 update
-        r = await fetch(localMlUrl + '/federated/retry', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...localServiceHeaders() },
-          body: JSON.stringify({
-            task,
-            api_url: centralApiUrl,
-            token: sessionStorage.getItem('arogyavaani_token'),
-            round: network.round,
-          }),
-        });
-      } else {
-        // Submit directly from the local trained checkpoint
-        r = await fetch(localMlUrl + '/federated/submit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...localServiceHeaders() },
-          body: JSON.stringify({
-            task,
-            api_url: centralApiUrl,
-            token: sessionStorage.getItem('arogyavaani_token'),
-            round: network.round,
-          }),
-        });
-      }
-
-      const b = await r.json();
-      if (!r.ok) throw new Error(b.detail ?? b.message ?? 'Model update transmission failed.');
-
-      setSubmitted(`Model update successfully submitted and accepted by central coordinator for Round ${network.round}.`);
-      await refreshLocalState();
       await refreshNetwork();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Model update transmission failed; the local update remains saved locally for retry.');
+      setSubmitted(`Federated status refreshed for Round ${network.round}.`);
     } finally {
       setBusy(false);
     }
@@ -655,8 +481,6 @@ function LocalTrain() {
     }
     if (training.status === 'completed') {
       if (training.submission?.status === 'submitted') return { label: 'Persisted Successfully on Server', tone: 'green' };
-      if (training.submission?.status === 'pending_retry') return { label: 'Failed and Awaiting Retry', tone: 'red' };
-      if (pending.length > 0) return { label: 'Waiting to Upload', tone: 'amber' };
       return { label: 'Generated Locally', tone: 'blue' };
     }
     if (training.status === 'submitting') return { label: 'Uploading to Server...', tone: 'blue' };
@@ -693,7 +517,7 @@ function LocalTrain() {
               ))}
             </select>
           </label>
-          <button className="button secondary" onClick={() => { void refreshNetwork(); void refreshLocalState(); }} title="Refresh federation and local status">
+          <button className="button secondary" onClick={() => { void refreshNetwork(); }} title="Refresh federation status">
             <RefreshCw size={15} /> Refresh
           </button>
         </div>
@@ -725,55 +549,14 @@ function LocalTrain() {
         <div>
           <span style={{ fontSize: '13px', fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.8px' }}>Model Update Lifecycle</span>
           <div style={{ fontSize: '18px', fontWeight: 750, color: 'var(--navy)', marginTop: '2px' }}>Mathematical Parameter State</div>
+          <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Zap size={14} color="#0d8a68" />
+            <span>Client-side WebGPU Engine: <b>{hardwareName}</b> (100% private in-browser training)</span>
+          </div>
         </div>
         <Pill done={updateStatus.tone === 'green'} tone={updateStatus.tone}>
           {updateStatus.label}
         </Pill>
-      </section>
-
-      {/* Engine Selection: WebGPU vs Desktop Python Daemon */}
-      <section className="engine-selector">
-        <div
-          role="button"
-          tabIndex={0}
-          className={`engine-card ${engine === 'webgpu' ? 'selected' : ''}`}
-          onClick={() => {
-            setEngine('webgpu');
-            clear();
-          }}
-          onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && setEngine('webgpu')}
-        >
-          <div className="engine-card-header">
-            <div className="engine-title">
-              <Zap size={20} color="#0d8a68" />
-              <span>In-Browser WebGPU Engine</span>
-            </div>
-            <span className="engine-badge green">Zero Install • Instant</span>
-          </div>
-          <p>Train directly inside your browser sandbox using GPU hardware acceleration. No software downloads, Python, or terminal required.</p>
-          <small><Cpu size={14} /> Accelerator: {hardwareName}</small>
-        </div>
-
-        <div
-          role="button"
-          tabIndex={0}
-          className={`engine-card ${engine === 'python' ? 'selected' : ''}`}
-          onClick={() => {
-            setEngine('python');
-            clear();
-          }}
-          onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && setEngine('python')}
-        >
-          <div className="engine-card-header">
-            <div className="engine-title">
-              <Server size={20} color="#1a73e8" />
-              <span>Desktop Python ML Agent</span>
-            </div>
-            <span className="engine-badge blue">Native Python CLI</span>
-          </div>
-          <p>Connects to the hospital's local Python daemon on <code>127.0.0.1:8000</code> using PyTorch CUDA/CPU for heavy batch runs.</p>
-          <small><ShieldCheck size={14} /> Loopback: 127.0.0.1:8000</small>
-        </div>
       </section>
 
       <section className="panel upload-panel">
@@ -849,11 +632,7 @@ function LocalTrain() {
               <button className="button primary" disabled={busy || Boolean(validation)} onClick={() => void upload()}>
                 {busy ? 'Preparing…' : 'Prepare Dataset'} <ArrowRight size={16} />
               </button>
-              <small>
-                {engine === 'webgpu'
-                  ? 'Zero installation: validates images directly in browser sandbox memory with complete privacy.'
-                  : 'Files are copied strictly to the local hospital training service for offline batch loading.'}
-              </small>
+              <small>Zero installation: validates images directly in browser sandbox memory with complete privacy.</small>
             </div>
           </section>
         )}
@@ -867,7 +646,7 @@ function LocalTrain() {
               <CheckCircle2 size={24} />
               <div>
                 <b>Local Dataset Validated & Ready</b>
-                <span>{engine === 'webgpu' ? `Validated in browser sandbox · ${hardwareName}` : 'Validated by the hospital-side PyTorch environment'}</span>
+                <span>Validated in browser sandbox · {hardwareName}</span>
               </div>
             </div>
             <div className="dataset-real-metrics">
@@ -898,7 +677,7 @@ function LocalTrain() {
               disabled={busy || ['queued', 'validating', 'training', 'packaging', 'submitting'].includes(training.status)}
               onClick={() => void train()}
             >
-              {busy ? 'Starting…' : engine === 'webgpu' ? 'Start WebGPU Local Training' : 'Start Local Training'} <ArrowRight size={16} />
+              {busy ? 'Starting…' : 'Start WebGPU Local Training'} <ArrowRight size={16} />
             </button>
           )}
         </div>

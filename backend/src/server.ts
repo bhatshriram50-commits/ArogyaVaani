@@ -383,7 +383,7 @@ const validateWireValues = (wire: WireModel) => {
     if (tensor.dtype === 'f64') for (let index = 0; index < tensor.length; index += 8) if (!Number.isFinite(wire.payload.readDoubleLE(wire.dataOffset + tensor.offset + index))) throw new Error('Model update contains invalid floating-point parameters.');
   }
 };
-const aggregateWireModels = (updates: Array<{ binaryPayload: Buffer; samples: number }>) => {
+const aggregateWireModels = (updates: Array<{ binaryPayload: Buffer; samples: number }>, resultingVersion?: number) => {
   const models = updates.map(item => ({ ...item, model: parseWireModel(item.binaryPayload) })); const first = models[0].model;
   const signature = (model: WireModel) => (model.manifest.task ?? 'PNEUMONIA') + '|' + model.manifest.architecture + '|' + model.manifest.tensors.map(t => t.name + ':' + t.dtype + ':' + t.shape.join('x') + ':' + t.length).join('|');
   if (models.some(item => signature(item.model) !== signature(first))) throw new Error('Model update tensor shapes do not match.');
@@ -398,7 +398,7 @@ const aggregateWireModels = (updates: Array<{ binaryPayload: Buffer; samples: nu
     else models[0].model.payload.copy(chunk, 0, first.dataOffset + tensor.offset, first.dataOffset + tensor.offset + tensor.length);
     tensors.push({ ...tensor, offset }); offset += chunk.length; chunks.push(chunk);
   }
-  const manifest = Buffer.from(JSON.stringify({ format: 'arogyavaani-state-v1', task: first.manifest.task, classes: first.manifest.classes, architecture: first.manifest.architecture, baseVersion: first.manifest.baseVersion, tensors }));
+  const manifest = Buffer.from(JSON.stringify({ format: 'arogyavaani-state-v1', task: first.manifest.task, classes: first.manifest.classes, architecture: first.manifest.architecture, baseVersion: resultingVersion ?? first.manifest.baseVersion, tensors }));
   const size = Buffer.alloc(4); size.writeUInt32LE(manifest.length);
   return { binaryPayload: Buffer.concat([Buffer.from('AVM1'), size, manifest, ...chunks]), classes: first.manifest.classes, architecture: first.manifest.architecture, parameterShapes: Object.fromEntries(first.manifest.tensors.map(t => [t.name, t.shape])), totalSamples };
 };
@@ -498,8 +498,9 @@ async function aggregateRound(roundNumber: number, task: MedicalTaskId = 'PNEUMO
     if (updates.length !== claimed.expectedParticipantCount || updates.some(update => !claimed.participantHospitalIds.includes(update.hospitalId))) throw new Error('Round does not contain every required participant update.');
     const latest = await currentModel(task);
     if ((latest?.version ?? 0) !== claimed.baseGlobalModelVersion || updates.some(update => update.baseVersion !== claimed.baseGlobalModelVersion)) throw new Error('One or more updates were trained from an outdated global model.');
-    const aggregate = aggregateWireModels(await Promise.all(updates.map(async update => ({ ...update, binaryPayload: await payloadFor(update) }))));
-    const result: any = { task, version: claimed.baseGlobalModelVersion + 1, round: roundNumber, samples: aggregate.totalSamples, hospitals: updates.length, classes: aggregate.classes, architecture: aggregate.architecture, parameterShapes: aggregate.parameterShapes, status: 'ACTIVE', createdAt: new Date(), checksum: checksum(aggregate.binaryPayload) };
+    const resultingVersion = claimed.baseGlobalModelVersion + 1;
+    const aggregate = aggregateWireModels(await Promise.all(updates.map(async update => ({ ...update, binaryPayload: await payloadFor(update) }))), resultingVersion);
+    const result: any = { task, version: resultingVersion, round: roundNumber, samples: aggregate.totalSamples, hospitals: updates.length, classes: aggregate.classes, architecture: aggregate.architecture, parameterShapes: aggregate.parameterShapes, status: 'ACTIVE', createdAt: new Date(), checksum: checksum(aggregate.binaryPayload) };
     if (useDb()) {
       const artifactKey = artifactKeyFor('models', task); await saveArtifact(artifactKey, aggregate.binaryPayload); result.artifactKey = artifactKey;
       try {

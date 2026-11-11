@@ -218,6 +218,7 @@ export async function runInBrowserTraining({
   classes,
   task,
   baseModelBuffer,
+  baseVersion,
   epochs = 5,
   batchSize = 8,
   learningRate = 0.001,
@@ -227,6 +228,7 @@ export async function runInBrowserTraining({
   classes: string[];
   task: string;
   baseModelBuffer: ArrayBuffer;
+  baseVersion?: number;
   epochs?: number;
   batchSize?: number;
   learningRate?: number;
@@ -411,8 +413,15 @@ export async function runInBrowserTraining({
   updatedTensors.set('classifier.weight', currentWeights);
   updatedTensors.set('classifier.bias', currentBias);
 
+  const updatedManifest: WireManifest = {
+    ...parsed.manifest,
+    baseVersion: typeof baseVersion === 'number' ? baseVersion : parsed.manifest.baseVersion,
+    task: task || parsed.manifest.task,
+    classes: classes && classes.length ? classes : parsed.manifest.classes,
+  };
+
   const avm1Payload = serializeAvm1(
-    parsed.manifest,
+    updatedManifest,
     updatedTensors,
     parsed.rawBuffer,
     parsed.dataOffset
