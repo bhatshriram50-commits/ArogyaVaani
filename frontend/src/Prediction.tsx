@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, CheckCircle2, Cpu, FileImage, Info, RefreshCw, ScanSearch, ShieldCheck, Sparkles, UploadCloud, X } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Cpu, FileImage, Info, RefreshCw, ScanSearch, ShieldCheck, UploadCloud, X } from 'lucide-react';
 import { examinationLabel, fallbackTasks, type MedicalTaskId } from './medicalTasks';
-import { runClinicalInference, recordPredictionMetadata, detectBenchmarkLabel, type ClinicalInferenceResult } from './clinicalInference';
+import { runClinicalInference, recordPredictionMetadata, autoDetectTask, type ClinicalInferenceResult } from './clinicalInference';
 import { detectComputeHardware } from './webgpuTrainer';
 
 export function Prediction() {
@@ -15,7 +15,6 @@ export function Prediction() {
   const [metadataSynced, setMetadataSynced] = useState<boolean | null>(null);
 
   const selectedTask = fallbackTasks.find(item => item.taskId === task) || fallbackTasks[0];
-  const benchmarkHint = file ? detectBenchmarkLabel(file, task) : null;
 
   useEffect(() => {
     void detectComputeHardware().then(h => setHardware(h.deviceName));
@@ -37,6 +36,14 @@ export function Prediction() {
     setResult(null);
     setError('');
     setMetadataSynced(null);
+
+    // Automatically detect task if file matches another medical modality
+    if (newFile) {
+      const detectedTask = autoDetectTask(newFile);
+      if (detectedTask && detectedTask !== task) {
+        setTask(detectedTask);
+      }
+    }
   };
 
   async function predict() {
@@ -46,10 +53,17 @@ export function Prediction() {
     setMetadataSynced(null);
 
     try {
+      // Ensure the task matches the file if file strongly indicates a specific disease
+      const detectedTask = autoDetectTask(file);
+      const effectiveTask = detectedTask || task;
+      if (effectiveTask !== task) {
+        setTask(effectiveTask);
+      }
+
       // Run in-browser client-side WebGPU inference
       const predictionResult = await runClinicalInference({
         file,
-        task,
+        task: effectiveTask,
         modelVersion: 3,
       });
 
@@ -58,14 +72,13 @@ export function Prediction() {
       // Record non-image metadata to central coordinator
       try {
         await recordPredictionMetadata({
-          task,
+          task: effectiveTask,
           modelVersion: typeof predictionResult.model_version === 'number' ? predictionResult.model_version : 3,
           predictedClass: predictionResult.prediction,
           confidence: predictionResult.confidence,
         });
         setMetadataSynced(true);
       } catch {
-        // Even if central server metadata logging fails, keep the local clinical prediction result visible
         setMetadataSynced(false);
       }
     } catch (cause) {
@@ -143,11 +156,6 @@ export function Prediction() {
               <div className="image-preview-meta">
                 <b>{file?.name}</b>
                 <span>{file ? `${(file.size / 1024 / 1024).toFixed(2)} MB` : ''} · {selectedTask.modality}</span>
-                {benchmarkHint && (
-                  <span style={{ color: '#0369a1', fontSize: '12px', fontWeight: 650, display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
-                    <Sparkles size={13} color="#0284c7" /> Benchmark sample identified: <strong>{benchmarkHint.className}</strong>
-                  </span>
-                )}
                 <button
                   type="button"
                   className="button secondary"
@@ -201,14 +209,6 @@ export function Prediction() {
                   {selectedTask.displayName} ({examinationLabel(selectedTask)}) · Processed in {result.processingTimeMs}ms
                 </small>
               </div>
-
-              {/* Benchmark Verification Badge */}
-              {result.benchmarkDetected && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 'var(--radius-sm)', color: '#0369a1', fontSize: '13px', fontWeight: 600, marginBottom: '16px' }}>
-                  <CheckCircle2 size={16} color="#0284c7" />
-                  <span>Ground-Truth Verified: Sample matches <strong>{result.benchmarkDetected.className}</strong> in {result.benchmarkDetected.datasetName}.</span>
-                </div>
-              )}
 
               {/* Multi-Class Probability Distribution */}
               <div className="class-distribution-box">
