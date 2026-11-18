@@ -507,6 +507,13 @@ async function aggregateRound(roundNumber: number, task: MedicalTaskId = 'PNEUMO
         await GlobalModel.create(result);
         await GlobalModel.updateMany({ task, status: 'ACTIVE', version: { $ne: result.version } }, { $set: { status: 'SUPERSEDED' } });
         await FederatedRound.updateOne({ _id: claimed._id, status: 'AGGREGATING' }, { $set: { status: 'COMPLETED', resultingGlobalModelVersion: result.version, completedAt: new Date(), totalSamples: result.samples } });
+        for (const update of updates) {
+          if (update.artifactKey) await removeArtifact(update.artifactKey).catch(() => undefined);
+        }
+        const oldSuperseded = await GlobalModel.find({ task, status: 'SUPERSEDED' }).sort({ version: -1 }).skip(1).lean();
+        for (const old of oldSuperseded) {
+          if (old.artifactKey) await removeArtifact(old.artifactKey).catch(() => undefined);
+        }
       }
       catch (error) { await removeArtifact(artifactKey); throw error; }
     }
